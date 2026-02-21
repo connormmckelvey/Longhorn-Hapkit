@@ -9,11 +9,11 @@
 #define ENCODER_OPTIMIZE_INTERRUPTS
 #include <TimerOne.h>  // This library manages the timing of the haptic loop 
 #include <Encoder.h>   // This library manages the encoder read.
-#include "serial_communication.h" // This library manages the serial communication between the Arduino and the PC. You will need to add this library to your project.
+#include "haplink.h" // This library manages the serial communication between the Arduino and the PC.
 
 // Parameters that define what environment to render
 enum environment {VIRTUAL_WALL = 0, VIRTUAL_SPRING = 1, CONST_DAMPENER = 2, SIN_DAMPENER = 3, FISHROD_CAST = 4 };
-environment currentEnvironment = VIRTUAL_SPRING; // default environment
+volatile environment currentEnvironment = VIRTUAL_SPRING; // default environment
 
 // Pin Declarations
 const int PWMoutp = 4;
@@ -24,6 +24,7 @@ const int encoder0PinA = 2;
 const int encoder0PinB = 3;
 
 Encoder encoder(encoder0PinA,encoder0PinB);
+Haplink haplink;
 
 double encoderResolution = 48;
 double pos = 0; 
@@ -77,12 +78,12 @@ const unsigned long HAPTIC_PERIOD_US = 1000;
 // *************** Parameter for haptic rendering *******************
 // Parameters for virtual wall
 double x_wall = 0.05;                   // Position of the virtual wall
-double k_wall = 800;                     // Maximum stiffness of the virtual wall
+volatile double k_wall = 800;                     // Maximum stiffness of the virtual wall
 
 // Parameters for virtual spring
-double K_spring = 60;  // Spring stiffness [N/m]
+volatile double K_spring = 60;  // Spring stiffness [N/m]
 // Parameters for linear damping
-double b_linear = 75;                   // Linear damping in N/m
+volatile double b_linear = 75;                   // Linear damping in N/m
 // Parameters for fishing rod casting
 #define READY -1
 #define PULLING_BACK 0
@@ -305,9 +306,15 @@ int8_t casting_status = READY;          // initial state
 //--------------------------------------------------------------------------
 void setup()
 {
-  // Set Up Serial
-  commInit(115200, 100.0f, true); // baud rate, send rate (Hz), debug enabled
 
+ Serial.begin(115200); // Initialize serial communication for debugging (optional, but helpful for troubleshooting)
+ haplink.begin(Serial); // Initialize serial communication with the PC through the Haplink library
+ haplink.registerParam(0, (void*)&currentEnvironment, HL_DataType::HL_UINT8); // Register the current environment variable to be set from the PC. You can register other parameters here as well (e.g., stiffness of the wall, stiffness of the spring, damping coefficient, etc.)
+ haplink.registerParam(1, (void*)&k_wall, HL_DataType::HL_DOUBLE);
+ haplink.registerParam(2, (void*)&K_spring, HL_DataType::HL_DOUBLE);
+ haplink.registerTelemetry(0, (void*)&xh, HL_DataType::HL_DOUBLE);
+ haplink.registerTelemetry(1, (void*)&dxh_filt, HL_DataType::HL_DOUBLE);
+  
  // Output Pins
  pinMode(PWMoutp, OUTPUT);
  pinMode(PWMoutn, OUTPUT);
@@ -336,50 +343,7 @@ void setup()
 
 void loop()
 {
-  if(timeoutOccured)
-  {
-    commSendDebug("Haptic loop is taking too long to execute! Try simplifying your code in the haptic loop or increasing the timer period.");
-  }
-  //Serial.println(xh,5);
-  //commUpdate();
-  //commSendState(xh, dxh_filt);
-  // if (commCommandAvailable())
-  // {
-  //   if (commGetCommandType() == 'S')
-  //   {
-  //     if (commGetCommandValue() == 0)
-  //     {
-  //       commSetStreamEnabled(false);
-  //       commSendDebug("Streaming Stopped");
-  //     }
-  //     else
-  //     {
-  //       commSetStreamEnabled(true);
-  //       commSendDebug("Streaming Started");
-  //     }  
-  //   }
-  //   else if (commGetCommandType() == 'T')
-  //   {
-  //     currentEnvironment = (environment) (int) commGetCommandValue();
-  //     commSendDebug("Environment Changed");
-      
-  //   }
-  //   else if (commGetCommandType() == 'K')
-  //   {
-  //     k_wall = commGetCommandValue();
-  //     commSendDebug("Wall Stiffness Changed");
-  //   }
-  //   else if (commGetCommandType() == 'P')
-  //   {
-  //     K_spring = commGetCommandValue();
-  //     commSendDebug("Spring Stiffness Changed");
-  //   }
-  //   else if (commGetCommandType() == 'B')
-  //   {
-  //     b_linear = commGetCommandValue();
-  //     commSendDebug("Damping Coefficient Changed");
-  //   }
-    
-  // }
+  haplink.update(); // Update the Haplink library to process incoming serial data and send telemetry. You can call this as often as you want, but it should be called at least once every loop() to ensure proper communication with the PC.}
+  haplink.sendTelemetry(0);
+  haplink.sendTelemetry(1); 
 }
-

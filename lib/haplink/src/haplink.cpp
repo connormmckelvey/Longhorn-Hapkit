@@ -11,7 +11,7 @@ void Haplink::begin(Stream &serialPort, uint32_t connectionTimeoutMs){
     lastPacketTime = millis();
 }
 
-bool Haplink::registerParam(uint8_t id, void* address, HL_DataType type){
+bool Haplink::registerParam(uint8_t id,void* address, HL_DataType type){
     if(paramCount < MAX_PARAMS)
     {
         paramRegistry[paramCount].id = id;
@@ -23,7 +23,7 @@ bool Haplink::registerParam(uint8_t id, void* address, HL_DataType type){
     return false; //registry full
 }
 
-bool Haplink::registerTelemetry(uint8_t id, void* address, HL_DataType type){
+bool Haplink::registerTelemetry(uint8_t id,void* address, HL_DataType type){
     if(telemetryCount < MAX_TELEMETRY)
     {
         telemetryRegistry[telemetryCount].id = id;
@@ -162,6 +162,65 @@ void Haplink::safeWrite(void* dest,
     noInterrupts();
     memcpy(dest, src, size);
     interrupts();
+}
+
+void Haplink::safeRead(uint8_t* dest, const void* src, uint8_t size)
+{
+    noInterrupts();
+    memcpy(dest, src, size);
+    interrupts();
+}
+
+bool Haplink::sendTelemetry(uint8_t id)
+{
+    for (uint8_t i = 0; i < telemetryCount; i++)
+    {
+        if (telemetryRegistry[i].id == id)
+        {
+            HL_Packet packet;
+
+            packet.header = START_BYTE;
+            packet.packetType = HL_PACKET_TELEMETRY;
+            packet.id = id;
+            packet.dataType = telemetryRegistry[i].type;
+
+            // Determine size
+            uint8_t size = 0;
+            switch (telemetryRegistry[i].type)
+            {
+                case HL_UINT8:  size = sizeof(uint8_t); break;
+                case HL_INT16:  size = sizeof(int16_t); break;
+                case HL_INT32:  size = sizeof(int32_t); break;
+                case HL_FLOAT:  size = sizeof(float); break;
+                case HL_DOUBLE: size = sizeof(double); break;
+                default: return false;
+            }
+
+            memset(packet.data, 0, 8);
+
+            // Safe read from variable
+            safeRead(packet.data,
+                     telemetryRegistry[i].address,
+                     size);
+
+            // Compute checksum
+            packet.checksum = computeChecksum(packet);
+
+            // Send raw bytes
+            serial->write((uint8_t*)&packet, PACKET_SIZE);
+
+            return true;
+        }
+    }
+
+    return false; // ID not found
+}
+
+void Haplink::sendAllTelemetry(){
+    for (int16_t i = 0; i < telemetryCount; i++)
+    {
+        sendTelemetry(telemetryRegistry[i].id);
+    }
 }
 
 bool Haplink::connectionAlive()

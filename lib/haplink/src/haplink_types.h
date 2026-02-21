@@ -1,3 +1,6 @@
+#ifndef HAPLINK_TYPES_H
+#define HAPLINK_TYPES_H
+
 #include <stdint.h>
 
 typedef struct HL_Packet{
@@ -39,3 +42,5 @@ struct HL_TelemetryBinding {
     void*   address; //pointer to the variable in the code that this ID corresponds to
     HL_DataType type;
 };
+
+#endif
