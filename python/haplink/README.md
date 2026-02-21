@@ -115,12 +115,35 @@ finally:
 Haplink supports 5 data types:
 
 ```python
-DataType.UINT8    # 0-255
-DataType.INT16    # -32768 to 32767
-DataType.INT32    # Large signed integers
-DataType.FLOAT    # 32-bit floating point
-DataType.DOUBLE   # 64-bit floating point
+DataType.UINT8    # 0-255 (1 byte)
+DataType.INT16    # -32768 to 32767 (2 bytes)
+DataType.INT32    # Large signed integers (4 bytes)
+DataType.FLOAT    # 32-bit floating point (4 bytes)
+DataType.DOUBLE   # 64-bit floating point (8 bytes)
 ```
+
+### ⚠️  CRITICAL: Arduino Double is 4 Bytes
+
+On AVR-based Arduino boards (Uno, Mega, Nano), **`double` is only 4 bytes** - identical to `float`. This differs from desktop platforms where `double` is 8 bytes.
+
+**Arduino code must use `HL_FLOAT` for double variables:**
+
+```cpp
+// Arduino side
+double xh = 0.0;  // Only 4 bytes on AVR
+haplink.registerTelemetry(1, &xh, HL_FLOAT);  // ✓ Correct: 4 bytes
+haplink.registerTelemetry(1, &xh, HL_DOUBLE); // ✗ Wrong: expects 8 bytes
+```
+
+**Python and Arduino must match:**
+
+```python
+# Python side - MUST match Arduino registration!
+haplink.register_telemetry(1, 'xh', DataType.FLOAT)   # ✓ Correct: matches HL_FLOAT
+haplink.register_telemetry(1, 'xh', DataType.DOUBLE)  # ✗ Wrong: mismatched
+```
+
+**If you register as DOUBLE on Python but HL_FLOAT on Arduino, you'll receive all zeros.**
 
 ### IDs
 
@@ -219,14 +242,29 @@ error = haplink.get_telemetry('error')
 Returns `None` if no data has been received yet.
 Raises `ValueError` if telemetry not registered.
 
-##### `update() -> None`
+##### `update(debug=False) -> int`
 Process incoming packets from the device. Call this regularly to receive new telemetry data.
+
+**Parameters:**
+- `debug` (bool, optional): Enable debug output to console. Shows received packet details. Default: False.
+
+**Returns:**
+- Number of packets successfully processed
 
 ```python
 while True:
-    haplink.update()
+    # Normal operation
+    packets = haplink.update()
+    
+    # Debug mode: prints packet details
+    packets = haplink.update(debug=True)
+    
+    # Example debug output:
+    # [DEBUG] Packet received: type=TELEMETRY, id=0
+    # [DEBUG] ID 0: hex=46A7B43E, decoded=0.353
+    # [DEBUG] update() processed 2 packets, 0 errors
+    
     data = haplink.get_telemetry('sensor')
-    # process data
 ```
 
 #### Status Methods
@@ -376,7 +414,37 @@ finally:
 
 ## Best Practices
 
-### 1. Always Disconnect
+### 1. Match Data Types Between Arduino and Python
+
+This is the #1 source of issues. Create a shared constants file:
+
+**Arduino (constants.h):**
+```cpp
+#define PARAM_SPEED 1
+#define TEL_POSITION 1
+#define TEL_POSITION_TYPE HL_FLOAT  // ⚠️  double is 4 bytes on AVR!
+```
+
+**Python (constants.py):**
+```python
+PARAM_SPEED = 1
+TEL_POSITION = 1
+TEL_POSITION_TYPE = DataType.FLOAT  # Must match Arduino!
+```
+
+**Usage:**
+```cpp
+// Arduino
+double xh = 0.0;  // Only 4 bytes
+haplink.registerTelemetry(TEL_POSITION, &xh, TEL_POSITION_TYPE);
+```
+
+```python
+# Python
+haplink.register_telemetry(TEL_POSITION, 'position', TEL_POSITION_TYPE)
+```
+
+### 2. Always Disconnect
 
 Use try/finally to ensure cleanup:
 
@@ -389,7 +457,7 @@ finally:
     haplink.disconnect()
 ```
 
-Or use `with` statement (if implemented):
+Or use context manager pattern (if implemented):
 
 ```python
 with Haplink('COM5') as haplink:
@@ -397,7 +465,7 @@ with Haplink('COM5') as haplink:
     # Automatically disconnects
 ```
 
-### 2. Call update() Regularly
+### 3. Call update() Regularly
 
 Telemetry data arrives asynchronously. Call `update()` frequently to keep data fresh:
 
@@ -406,35 +474,25 @@ while True:
     haplink.update()  # Must call this to receive new data
     data = haplink.get_telemetry('sensor')
     # process
-    time.sleep(0.01)  # 100 Hz
+    time.sleep(0.01)  # 100 Hz update loop
 ```
 
-### 3. Match IDs Between Arduino and Python
+### 4. Use Debug Mode to Verify Communication
 
-ID mismatches will prevent communication. Create a shared constants file:
-
-**constants.h** (Arduino):
-```cpp
-#define PARAM_SPEED 1
-#define TEL_POSITION 1
-```
-
-**constants.py** (Python):
-```python
-PARAM_SPEED = 1
-TEL_POSITION = 1
-```
-
-### 4. Use Descriptive Names
-
-Register with clear, descriptive names for easier debugging:
+When data isn't arriving, use debug mode to diagnose:
 
 ```python
-# Good
-haplink.register_param(1, 'motor_speed_setpoint', DataType.FLOAT)
+# First few calls with debug
+for i in range(5):
+    packets = haplink.update(debug=True)
+    print(f"Received {packets} packets")
+    time.sleep(0.1)
 
-# Less clear
-haplink.register_param(1, 'sp', DataType.FLOAT)
+# Output tells you:
+# - Packet type (TELEMETRY)
+# - Packet ID (which variable)
+# - Data type code (04=FLOAT, 05=DOUBLE)
+# - Raw hex bytes and decoded value
 ```
 
 ### 5. Handle None Values
@@ -467,6 +525,22 @@ while True:
     time.sleep(0.1)
 ```
 
+### 7. Verify Serial Configuration
+
+Ensure Arduino and Python match:
+
+```python
+# Arduino side
+Serial.begin(115200);
+haplink.begin(Serial);
+
+# Python side
+haplink = Haplink('COM5', baudrate=115200)
+haplink.connect()
+```
+
+**Both MUST be 115200 baud by default.**
+
 ---
 
 ## Limitations & Constraints
@@ -474,11 +548,12 @@ while True:
 - **Max Parameters**: 32 per device (enforced by Arduino firmware)
 - **Max Telemetry**: 32 per device (enforced by Arduino firmware)
 - **Data Size**: Maximum 8 bytes per packet payload (largest supported type is double)
+- **⚠️  Arduino Double Size**: Arduino `double` is only 4 bytes on AVR boards. Always register as `DataType.FLOAT` to match `HL_FLOAT` on Arduino side.
 - **Unimplemented Features**: 
   - Parameter read requests (HL_PACKET_PARAM_READ) - device firmware doesn't implement this yet
   - Heartbeat packets (HL_PACKET_HEARTBEAT) - not actively used
 - **Read-Only Telemetry**: Python client only receives telemetry FROM device; sending telemetry TO device is not supported
-- **IDs must match**: Parameter and telemetry IDs registered in Python MUST match those registered in Arduino sketch exactly
+- **IDs must match**: Parameter and telemetry IDs registered in Python MUST match those registered in Arduino sketch exactly, and data types must match exactly
 
 ---
 
@@ -498,26 +573,85 @@ if not haplink.connect():
     print("Check: Correct serial port and baudrate")
 ```
 
+### Receiving All Zeros (Critical: Data Type Mismatch)
+
+**Symptom**: Data arrives in packets but always shows 0.0
+
+**Cause**: Arduino and Python registered different data types
+- Arduino: `HL_FLOAT` (4 bytes)
+- Python: `DataType.DOUBLE` (expects 8 bytes)
+
+**Solution**: Ensure they match exactly
+
+```python
+# ❌ WRONG - Mismatch will show zeros
+# Arduino: haplink.registerTelemetry(1, &xh, HL_FLOAT);
+haplink.register_telemetry(1, 'position', DataType.DOUBLE)
+
+# ✓ CORRECT - Both sides use FLOAT
+# Arduino: haplink.registerTelemetry(1, &xh, HL_FLOAT);
+haplink.register_telemetry(1, 'position', DataType.FLOAT)
+```
+
+**Verification Steps:**
+1. Use raw serial monitor to inspect packet hex:
+   ```
+   B1 00 04 46A7B43E  (ID=0, Type=04 FLOAT, Data=46A7B43E)
+   ```
+2. Check the DataType field (3rd data byte):
+   - `04` = FLOAT ✓
+   - `05` = DOUBLE ✗
+3. Verify Python registration matches:
+   ```python
+   # If you see 04 in packets, use:
+   haplink.register_telemetry(1, 'position', DataType.FLOAT)
+   ```
+
 ### Missing Telemetry Data
 
 ```python
 # Verify telemetry is registered
 print(haplink.list_telemetry())
 
-# Check for None values
+# Check for None values (no data received yet)
 data = haplink.get_telemetry('sensor')
 print(f"Data is None: {data is None}")
 
-# Make sure to call update()
+# Make sure to call update() regularly
 haplink.update()
+
+# Use debug mode to see if packets arriving
+haplink.update(debug=True)  # Shows all received packets
 ```
+
+### Protocol Errors (Checksum Failures)
+
+```python
+# Use debug mode to see validation errors
+haplink.update(debug=True)
+
+# Example output:
+# [DEBUG] ProtocolError: Checksum mismatch: computed 0xA5, received 0xB2
+```
+
+**Possible causes:**
+- Serial cable noise/corruption
+- Baud rate mismatch (Arduino and host must match)
+- EMI interference on serial line
+- Arduino not running Haplink firmware
+
+**Solutions:**
+- Use shielded serial cable
+- Move away from high-EMI devices
+- Verify baudrate: Arduino = 115200, Python = 115200
+- Check Arduino code is compiled with Haplink library
 
 ### Protocol Errors
 
-The library handles most protocol errors internally. If you see exceptions:
+The library handles most protocol errors internally and skips malformed packets. If you see exceptions:
 - Verify Arduino is running Haplink firmware
 - Check serial connection (loose cable, wrong port)
-- Verify baudrate matches both sides
+- Verify baudrate matches both sides (115200 recommended)
 - Check for EMI/noise on serial line
 
 ---

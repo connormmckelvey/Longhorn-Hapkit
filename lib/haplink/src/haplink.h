@@ -8,7 +8,6 @@
 class Haplink
 {
     public:
-        Haplink();
         void begin(Stream &serialPort,uint32_t connectionTimeoutMs = 1000);
         bool registerParam(uint8_t id,void* address, HL_DataType type);
         bool registerTelemetry(uint8_t id, void* address, HL_DataType type);

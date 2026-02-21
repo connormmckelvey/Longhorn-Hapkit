@@ -42,18 +42,6 @@ void Haplink::update(){
     }
 }
 
-bool Haplink::sendTelemetry(uint8_t id){
-    
-}
-
-void Haplink::sendAllTelemetry(){
-    for (int16_t i = 0; i < telemetryCount; i++)
-    {
-        sendTelemetry(telemetryRegistry[i].id);
-    }   
-}
-
-
 //internal methods
 void Haplink::processIncomingByte(uint8_t byte)
 {
@@ -197,18 +185,13 @@ bool Haplink::sendTelemetry(uint8_t id)
             }
 
             memset(packet.data, 0, 8);
-
-            // Safe read from variable
-            safeRead(packet.data,
-                     telemetryRegistry[i].address,
-                     size);
+            safeRead(packet.data, telemetryRegistry[i].address, size);
 
             // Compute checksum
             packet.checksum = computeChecksum(packet);
 
-            // Send raw bytes
-            serial->write((uint8_t*)&packet, PACKET_SIZE);
-
+            // Send packet
+            serial->write((uint8_t*)&packet, sizeof(HL_Packet));
             return true;
         }
     }

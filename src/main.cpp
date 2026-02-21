@@ -13,7 +13,7 @@
 
 // Parameters that define what environment to render
 enum environment {VIRTUAL_WALL = 0, VIRTUAL_SPRING = 1, CONST_DAMPENER = 2, SIN_DAMPENER = 3, FISHROD_CAST = 4 };
-volatile environment currentEnvironment = VIRTUAL_SPRING; // default environment
+volatile environment currentEnvironment = VIRTUAL_WALL; // default environment
 
 // Pin Declarations
 const int PWMoutp = 4;
@@ -30,6 +30,9 @@ double encoderResolution = 48;
 double pos = 0; 
 double lastPos = 0; 
 double lastVel = 0; 
+
+// Debug counter to verify haptic loop is running
+volatile uint8_t loopCounter = 0; 
 
 // Kinematics variables
 double xh = 0;           // position of the handle [m]
@@ -109,6 +112,10 @@ int8_t casting_status = READY;          // initial state
       {
         timeoutOccured = true;
       }
+      
+      // Increment counter to verify loop is running
+      loopCounter++;
+      
       //*************************************************************
       //*** Section 1. Compute position and velocity using encoder (DO NOT CHANGE!!) ***  
       //*************************************************************
@@ -310,10 +317,12 @@ void setup()
  Serial.begin(115200); // Initialize serial communication for debugging (optional, but helpful for troubleshooting)
  haplink.begin(Serial); // Initialize serial communication with the PC through the Haplink library
  haplink.registerParam(0, (void*)&currentEnvironment, HL_DataType::HL_UINT8); // Register the current environment variable to be set from the PC. You can register other parameters here as well (e.g., stiffness of the wall, stiffness of the spring, damping coefficient, etc.)
- haplink.registerParam(1, (void*)&k_wall, HL_DataType::HL_DOUBLE);
- haplink.registerParam(2, (void*)&K_spring, HL_DataType::HL_DOUBLE);
- haplink.registerTelemetry(0, (void*)&xh, HL_DataType::HL_DOUBLE);
- haplink.registerTelemetry(1, (void*)&dxh_filt, HL_DataType::HL_DOUBLE);
+ haplink.registerParam(1, (void*)&k_wall, HL_DataType::HL_FLOAT);  // Use FLOAT - Arduino double is only 4 bytes
+ haplink.registerParam(2, (void*)&K_spring, HL_DataType::HL_FLOAT);  // Use FLOAT
+ haplink.registerTelemetry(0, (void*)&xh, HL_DataType::HL_FLOAT);  // Use FLOAT - Arduino double is only 4 bytes
+ haplink.registerTelemetry(1, (void*)&dxh_filt, HL_DataType::HL_FLOAT);  // Use FLOAT
+ haplink.registerTelemetry(2, (void*)&loopCounter, HL_DataType::HL_UINT8);  // Debug: counter to verify haptic loop runs
+ haplink.registerTelemetry(3, (void*)&pos, HL_DataType::HL_FLOAT);  // Debug: raw encoder position
   
  // Output Pins
  pinMode(PWMoutp, OUTPUT);
@@ -344,6 +353,8 @@ void setup()
 void loop()
 {
   haplink.update(); // Update the Haplink library to process incoming serial data and send telemetry. You can call this as often as you want, but it should be called at least once every loop() to ensure proper communication with the PC.}
-  haplink.sendTelemetry(0);
-  haplink.sendTelemetry(1); 
+  haplink.sendTelemetry(0);  // xh
+  haplink.sendTelemetry(1);  // dxh_filt
+  haplink.sendTelemetry(2);  // loopCounter
+  haplink.sendTelemetry(3);  // raw pos from encoder
 }

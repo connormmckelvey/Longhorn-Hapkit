@@ -179,7 +179,7 @@ class SerialPort:
     Handles reading/writing complete packets with timeout and error handling.
     """
 
-    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 1.0):
+    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 0.01):
         """
         Initialize serial port (does not open connection).
 

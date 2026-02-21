@@ -42,17 +42,37 @@ All packets are fixed 13 bytes:
 | `HL_PACKET_TELEMETRY` | 0xB1 | Device → Host | Send telemetry data to host |
 | `HL_PACKET_HEARTBEAT` | 0xC1 | Either | Keep-alive packet |
 
-### Data Types
+## Data Types
 
 ```cpp
 enum HL_DataType : uint8_t {
-    HL_UINT8  = 1,  // 1 byte
-    HL_INT16  = 2,  // 2 bytes
+    HL_UINT8  = 1,  // 1 byte (0-255)
+    HL_INT16  = 2,  // 2 bytes (-32768 to 32767)
     HL_INT32  = 3,  // 4 bytes
-    HL_FLOAT  = 4,  // 4 bytes
-    HL_DOUBLE = 5   // 8 bytes
+    HL_FLOAT  = 4,  // 4 bytes (32-bit floating point)
+    HL_DOUBLE = 5   // ON AVR ARDUINO: ONLY 4 BYTES! (same as FLOAT)
 };
 ```
+
+### CRITICAL: Arduino Double is 4 Bytes
+
+On AVR-based Arduino boards (Uno, Mega, Nano), **`double` is only 4 bytes** - it's identical to `float`. This is different from desktop platforms where `double` is 8 bytes.
+
+**Always use `HL_FLOAT` for Arduino double variables:**
+
+```cpp
+// WRONG - Will send 4-byte data but marked as 8-byte
+double my_value = 0.0;
+haplink.registerTelemetry(1, &my_value, HL_DOUBLE);
+
+// CORRECT - 4-byte float registered as 4-byte
+double my_value = 0.0;
+haplink.registerTelemetry(1, &my_value, HL_FLOAT);
+```
+
+**Both Arduino and Python must agree on the type:**
+- Arduino: `HL_FLOAT` (4 bytes)
+- Python: `DataType.FLOAT` (4 bytes)
 
 ## Usage
 
@@ -89,8 +109,9 @@ void setup() {
   haplink.begin(Serial);
   
   // Register parameters (ID, address, data type)
-  haplink.registerParam(1, &motor_speed, HL_FLOAT);
-  haplink.registerParam(2, &position, HL_INT16);
+  // Remember: Arduino double is only 4 bytes - use HL_FLOAT!
+  haplink.registerParam(1, &motor_speed, HL_FLOAT);  // 4-byte float
+  haplink.registerParam(2, &position, HL_INT16);     // 2-byte int
 }
 
 void loop() {
@@ -107,7 +128,7 @@ void loop() {
 Register variables to stream their values to the host device:
 
 ```cpp
-float sensor_reading = 0.0;
+float sensor_reading = 0.0;    // Note: double is 4 bytes on Arduino
 uint8_t system_status = 0;
 
 void setup() {
@@ -115,8 +136,9 @@ void setup() {
   haplink.begin(Serial);
   
   // Register telemetry (ID, address, data type)
-  haplink.registerTelemetry(1, &sensor_reading, HL_FLOAT);
-  haplink.registerTelemetry(2, &system_status, HL_UINT8);
+  // Remember: Arduino double is only 4 bytes - use HL_FLOAT!
+  haplink.registerTelemetry(1, &sensor_reading, HL_FLOAT);   // 4-byte float
+  haplink.registerTelemetry(2, &system_status, HL_UINT8);    // 1-byte uint
 }
 
 void loop() {
@@ -207,9 +229,10 @@ Check if the host connection is still active.
 - **Max Parameters**: 32 (dictated by 8-bit ID field)
 - **Max Telemetry**: 32 (dictated by 8-bit ID field)
 - **Data Size**: Maximum 8 bytes per packet (largest supported type is double)
+- **Arduino Double Size**: On AVR boards, `double` is only 4 bytes (same as `float`). Always register double variables as `HL_FLOAT`.
 - **Unimplemented Features**: 
-  - Parameter read requests (HL_PACKET_PARAM_READ)
-  - Heartbeat handling
+  - Parameter read requests (HL_PACKET_PARAM_READ) - not yet implemented
+  - Heartbeat handling - defined but not actively used
 - **Thread Safety**: Parameter writes and telemetry reads use interrupt disabling, safe for simple interrupt scenarios
 
 ## Implementation Notes
@@ -235,6 +258,49 @@ void safeWrite(void* dest, const uint8_t* src, uint8_t size) {
 ```
 
 This is critical for multi-byte types that might be accessed by interrupt handlers.
+
+## Debugging
+
+### Transmitting All Zeros
+
+**Symptom**: Host receives packets with all zero data bytes, but variables have actual values.
+
+**Cause**: Mismatch between registered data type and actual variable size.
+
+**Solution**: 
+1. Verify `HL_FLOAT` is used for all Arduino `double` variables (not `HL_DOUBLE`)
+2. Check data type matches variable size:
+   ```cpp
+   double value = 1.5;        // 4 bytes on Arduino
+   haplink.registerTelemetry(1, &value, HL_FLOAT);  // ✓ Correct
+   haplink.registerTelemetry(1, &value, HL_DOUBLE); // ✗ Wrong - expects 8 bytes
+   ```
+
+### Verifying Packets Are Sent
+
+Use a raw serial monitor to inspect packet structure:
+
+```
+Expected packet format:
+[AA] [B1] [ID] [04] [data...] [checksum]
+  ↑    ↑    ↑    ↑
+  |    |    |    +-- Data type code (04 = FLOAT)
+  |    |    +-------- Telemetry ID
+  |    +------------- Packet type (B1 = TELEMETRY)
+  +------------------ Header (AA)
+```
+
+If data bytes are all 00, check the data type registration.
+
+### Connection Timeout
+
+If `connectionAlive()` returns false:
+1. Verify host is calling `haplink.update()` regularly
+2. Check serial connection (baud rate, cable)
+3. Increase timeout if needed:
+   ```cpp
+   haplink.begin(Serial, 5000);  // 5 second timeout
+   ```
 
 ## Example Application
 

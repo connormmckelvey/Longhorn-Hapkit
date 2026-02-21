@@ -74,7 +74,7 @@ class Haplink:
         self,
         port: str,
         baudrate: int = 115200,
-        timeout: float = 1.0,
+        timeout: float = 0.01,
         connection_timeout: float = 2.0
     ):
         """
@@ -83,7 +83,7 @@ class Haplink:
         Args:
             port: Serial port (e.g., 'COM5', '/dev/ttyUSB0')
             baudrate: Baud rate (default 115200)
-            timeout: Serial read timeout in seconds
+            timeout: Serial read timeout in seconds (default 0.01 for non-blocking)
             connection_timeout: Max time to wait for device response
         """
         self._serial = SerialPort(port, baudrate, timeout)
@@ -234,6 +234,9 @@ class Haplink:
         )
 
         self._serial.write_packet(packet)
+        
+        # Store the value locally so get_param_value() returns what we sent
+        param._value = value
 
     def get_telemetry(self, tel_name: str) -> Any:
         """
@@ -257,33 +260,63 @@ class Haplink:
         tel = self._telemetry_by_name[tel_name]
         return tel._value
 
-    def update(self) -> None:
+    def update(self, debug: bool = False) -> int:
         """
         Process incoming telemetry packets from device.
 
         Call this regularly (e.g., in main loop) to receive and buffer
-        telemetry data from the device.
+        telemetry data from the device. Reads all available packets.
+        
+        Args:
+            debug: If True, print debug information about packets received
+            
+        Returns:
+            Number of packets successfully processed
         """
         if not self._connected:
-            return
+            return 0
 
-        try:
-            packet = self._serial.read_packet()
-        except ProtocolError:
-            return
+        # Read all available packets (don't just read one)
+        packets_read = 0
+        errors = 0
+        while packets_read < 100:  # Prevent infinite loop
+            try:
+                packet = self._serial.read_packet()
+            except ProtocolError as e:
+                errors += 1
+                if debug and errors <= 3:
+                    print(f"[DEBUG] ProtocolError: {e}")
+                continue  # Skip malformed packets, try next
 
-        if packet is None:
-            return
+            if packet is None:
+                break  # No more data available
 
-        self._last_packet_time = time.time()
+            packets_read += 1
+            self._last_packet_time = time.time()
 
-        # Handle telemetry packets
-        if packet.packet_type == PacketType.TELEMETRY:
-            if packet.packet_id in self._telemetry:
-                tel = self._telemetry[packet.packet_id]
-                value = self._decode_value(packet.data, tel.data_type)
-                tel._value = value
-                tel._last_update = time.time()
+            if debug and packets_read <= 5:
+                print(f"[DEBUG] Packet received: type={packet.packet_type.name}, id={packet.packet_id}")
+
+            # Handle telemetry packets
+            if packet.packet_type == PacketType.TELEMETRY:
+                if packet.packet_id in self._telemetry:
+                    tel = self._telemetry[packet.packet_id]
+                    value = self._decode_value(packet.data, tel.data_type)
+                    
+                    # Debug: Show what we're decoding
+                    if debug and packets_read <= 5:
+                        hex_str = ' '.join([f'{b:02X}' for b in packet.data[:8]])
+                        print(f"[DEBUG] ID {packet.packet_id}: hex={hex_str}, decoded={value}")
+                    
+                    tel._value = value
+                    tel._last_update = time.time()
+                elif debug:
+                    print(f"[DEBUG] Unknown telemetry ID: {packet.packet_id}")
+        
+        if debug and packets_read > 0:
+            print(f"[DEBUG] update() processed {packets_read} packets, {errors} errors")
+        
+        return packets_read
 
     def get_telemetry_all(self) -> Dict[str, Any]:
         """
