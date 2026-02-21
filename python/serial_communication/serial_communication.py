@@ -1,80 +1,79 @@
 import time
 import serial
 
+
 class SerialCommunication:
     """
-    Python class to manage serial communication with the serial_communication.h module. Designed for haptic feedback applications, but can be adapted for other uses.
-
-    This will create commands in the expected format for the firmware format:
-        <COMMAND_TYPE><DELIMITER (default space)><VALUE>
+    Manages serial communication with Hapkit Arduino firmware.
     
-    Recieves data in the format:
-        <POSITION>,<VELOCITY>
-    or
-        DBG:<MSG>
+    Sends commands in format: TYPE VALUE (e.g., "F 0.25")
+    Receives data in format: POSITION,VELOCITY or DBG:MESSAGE
+    
+    This class handles the low-level serial protocol and state tracking.
+    Message display/logging should be handled by the calling code.
     """
-    # =========================================================
-    # Initialization (Does NOT auto-connect)
-    # =========================================================
 
     def __init__(self,
                  port: str,
                  baudrate: int = 115200,
                  timeout: float = 0.001,
-                 delimiter: str = ' ',
-                 debug_enabled: bool = False):
-
+                 delimiter: str = ' '):
+        """
+        Initialize SerialCommunication (does not auto-connect).
+        
+        Args:
+            port: Serial port name (e.g., "COM5" on Windows)
+            baudrate: Serial communication speed (default 115200)
+            timeout: Read timeout in seconds (default 0.001)
+            delimiter: Command separator character (default space)
+        """
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.delimiter = delimiter
-        self.debug_enabled = debug_enabled
 
         self.ser = None
         self.connected = False
 
-        # State variables
+        # State tracking
         self.position = 0.0
         self.velocity = 0.0
         self.last_update_time = 0.0
 
-        # Debug
+        # Latest debug message from device
         self.last_debug_message = ""
 
-        # Diagnostics
+        # Communication statistics
         self.bytes_sent = 0
         self.bytes_received = 0
         self.packet_count = 0
 
-    # =========================================================
-    # Connection / Handshake
-    # =========================================================
-
     def connect(self, handshake_timeout: float = 2.0) -> bool:
         """
-        Opens serial port and performs handshake.
-
-        Sends:
-            HELLO
-
-        Expects:
-            READY
-
-        Returns True if successful, False otherwise.
+        Open serial port and perform handshake with device.
+        
+        Handshake protocol:
+        - Send: HELLO
+        - Expect: READY
+        
+        Args:
+            handshake_timeout: Maximum time to wait for READY response (seconds)
+            
+        Returns:
+            True if connection successful, False otherwise
         """
-
         try:
             self.ser = serial.Serial(self.port,
                                      self.baudrate,
                                      timeout=self.timeout)
         except serial.SerialException as e:
-            print(f"failed error: {e}")
+            print(f"Connection error: {e}")
             return False
-        
-        # Allow Arduino reset
+
+        # Allow Arduino to reset after opening serial port
         time.sleep(2)
 
-        # Clear buffer
+        # Clear any spurious data in buffer
         self.ser.reset_input_buffer()
 
         # Send handshake
@@ -83,7 +82,6 @@ class SerialCommunication:
         start_time = time.time()
 
         while time.time() - start_time < handshake_timeout:
-
             line = self.ser.readline()
 
             if not line:
@@ -98,37 +96,41 @@ class SerialCommunication:
                 self.connected = True
                 return True
 
-        # If timeout reached
+        # Handshake timeout
         self.ser.close()
         self.connected = False
         return False
 
-    def close(self):
+    def close(self) -> None:
+        """Close the serial connection."""
         if self.ser and self.connected:
             self.ser.close()
         self.connected = False
 
-    # =========================================================
-    # Command Sending
-    # =========================================================
-
-    def send_command(self, cmd_type: str, value: float):
-
+    def send_command(self, cmd_type: str, value: float) -> None:
+        """
+        Send a command to the device.
+        
+        Args:
+            cmd_type: Command type identifier (e.g., "F", "S")
+            value: Command value (converted to float)
+        """
         if not self.connected:
             return
 
         message = f"{cmd_type}{self.delimiter}{value}\n"
         encoded = message.encode('utf-8')
-
         self.ser.write(encoded)
         self.bytes_sent += len(encoded)
 
-    # =========================================================
-    # Receiving / Update
-    # =========================================================
-
-    def update(self):
-
+    def update(self) -> None:
+        """
+        Update state by reading and processing incoming data.
+        
+        Handles two message types:
+        - Position/Velocity: "POSITION,VELOCITY"
+        - Debug messages: "DBG:MESSAGE"
+        """
         if not self.connected:
             return
 
@@ -144,14 +146,12 @@ class SerialCommunication:
         except UnicodeDecodeError:
             return
 
-        # Debug message
+        # Debug message from device
         if decoded.startswith("DBG:"):
             self.last_debug_message = decoded[4:]
-            if self.debug_enabled:
-                print("[ARDUINO DEBUG]", self.last_debug_message)
             return
 
-        # Position, velocity
+        # Position and velocity data
         try:
             pos_str, vel_str = decoded.split(",")
             self.position = float(pos_str)
@@ -159,19 +159,29 @@ class SerialCommunication:
             self.packet_count += 1
             self.last_update_time = time.time()
         except ValueError:
+            # Malformed data, ignore
             pass
 
-    # =========================================================
-    # Accessors
-    # =========================================================
-
-    def get_state(self):
+    def get_state(self) -> tuple:
+        """
+        Get current position and velocity.
+        
+        Returns:
+            Tuple of (position, velocity)
+        """
         return self.position, self.velocity
 
-    def is_connected(self):
+    def is_connected(self) -> bool:
+        """Check if device is connected."""
         return self.connected
 
-    def get_stats(self):
+    def get_stats(self) -> dict:
+        """
+        Get communication statistics.
+        
+        Returns:
+            Dictionary with keys: bytes_sent, bytes_received, packets_received
+        """
         return {
             "bytes_sent": self.bytes_sent,
             "bytes_received": self.bytes_received,

@@ -12,16 +12,13 @@
 #include "serial_communication.h" // This library manages the serial communication between the Arduino and the PC. You will need to add this library to your project.
 
 // Parameters that define what environment to render
-//#define ENABLE_VIRTUAL_WALL
-//#define ENABLE_VIRTUAL_SPRING
-//#define ENABLE_CONST_DAMPENER
-//#define ENABLE_SIN_DAMPENER
-#define ENABLE_FISHROD_CAST
+enum environment {VIRTUAL_WALL = 0, VIRTUAL_SPRING = 1, CONST_DAMPENER = 2, SIN_DAMPENER = 3, FISHROD_CAST = 4 };
+environment currentEnvironment = VIRTUAL_SPRING; // default environment
 
 // Pin Declarations
 const int PWMoutp = 4;
 const int PWMoutn = 5;
-const int PWMspeed = 6;
+const int PWMspeed = 9;
 
 const int encoder0PinA = 2;
 const int encoder0PinB = 3;
@@ -75,6 +72,7 @@ unsigned int output = 0;    // output command to the motor
 // Timing Variables: Initalize Timer and Set Haptic Loop
 boolean hapticLoopFlagOut = false; 
 boolean timeoutOccured = false; 
+const unsigned long HAPTIC_PERIOD_US = 1000;
 
 // *************** Parameter for haptic rendering *******************
 // Parameters for virtual wall
@@ -82,20 +80,21 @@ double x_wall = 0.05;                   // Position of the virtual wall
 double k_wall = 800;                     // Maximum stiffness of the virtual wall
 
 // Parameters for virtual spring
-double K_spring=0;
+double K_spring = 60;  // Spring stiffness [N/m]
 // Parameters for linear damping
 double b_linear = 75;                   // Linear damping in N/m
 // Parameters for fishing rod casting
 #define READY -1
 #define PULLING_BACK 0
 #define THROWING_BAIT 1
-double min_xh_for_casting = -0.05;      // minimum handle position for pulling back
+double min_xh_for_casting = -0.9;      // minimum handle position for pulling back
 double max_xh_for_casting = 0.0;        // maximum handle position for pulling back
 double dxh_threshold_for_back = -0.002; // backward velocity threshold
 double dxh_threshold_for_forward = 0.01; // forward velocity threshold to throw
 double fishing_pullback_force = 30;     // N, resistance during pull back
 double fishing_throwing_bait_force = -50; // N, assist force during forward throw
 int8_t casting_status = READY;          // initial state
+
 
 
 // --------------------------
@@ -119,8 +118,6 @@ int8_t casting_status = READY;          // initial state
         //*************************************************************
         //*** Section 2. Compute handle position in meters ************
         //*************************************************************
-      
-          // ADD YOUR CODE HERE
 
           // SOLUTION:
           // Define kinematic parameters you may need
@@ -145,7 +142,7 @@ int8_t casting_status = READY;          // initial state
           //*************************************************************
             
             // Calculate the velocity of the handle
-            dxh = (double)(xh - xh_prev) / 0.001;
+            dxh = (double)(xh - xh_prev) / (HAPTIC_PERIOD_US * 1e-6);
 
              // Calculate the filtered velocity of the handle using an infinite impulse response filter
             //dxh_filt = .9*dxh + 0.1*dxh_prev; 
@@ -198,7 +195,9 @@ int8_t casting_status = READY;          // initial state
         //*************************************************************
           // Forces algorithms
           //Serial.println(xh); 
-          #ifdef ENABLE_VIRTUAL_WALL
+          switch (currentEnvironment)
+          {
+          case VIRTUAL_WALL:
               if (xh > x_wall)
               {
                   force = -k_wall * (xh - x_wall) ; //+ -b_linear*(dxh_filt);
@@ -207,30 +206,29 @@ int8_t casting_status = READY;          // initial state
               {
                   force = 0;
               }
-          #endif
+          break;
 
           //virtual spring
          //****************************************************************
-          #ifdef ENABLE_VIRTUAL_SPRING
-            K_spring = 500;   // spring stiffness 
+          case VIRTUAL_SPRING:
             force = -K_spring*xh; 
-          #endif 
+          break;
           
           //const dampener
           //***************************************************************
-          #ifdef ENABLE_CONST_DAMPENER
+          case CONST_DAMPENER:
             force = -b_linear*dxh;
-          #endif
+          break;
 
           //const dampener
           //***************************************************************
-          #ifdef ENABLE_SIN_DAMPENER
-            printf("hi");
-          #endif
+          case SIN_DAMPENER:
+            
+          break;
           
           // fishing casting
           //***************************************************************
-          #ifdef ENABLE_FISHROD_CAST
+          case FISHROD_CAST:
             
           //were moving back in the cast
             if (xh > min_xh_for_casting and xh < max_xh_for_casting and dxh < dxh_threshold_for_back)
@@ -248,8 +246,8 @@ int8_t casting_status = READY;          // initial state
               casting_status = -1;
             }
             
-          #endif
-          
+          break;
+          }
           
 
       //*************************************************************
@@ -317,8 +315,8 @@ void setup()
 
  // Haptic Loop Timer Initalization
    Timer1.initialize(); 
-  long period = 1000; // [us]  10000 [us] - 1000 Hz 
-  Timer1.attachInterrupt(hapticLoop,period); 
+  const unsigned long period = HAPTIC_PERIOD_US; // [us]  10000 [us] - 1000 Hz 
+  Timer1.attachInterrupt(hapticLoop, period); 
 
   // Init Position and Velocity
   lastPos = encoder.read();
@@ -342,22 +340,46 @@ void loop()
   {
     commSendDebug("Haptic loop is taking too long to execute! Try simplifying your code in the haptic loop or increasing the timer period.");
   }
-  commUpdate();
-  commSendState(xh, dxh_filt);
-  if (commCommandAvailable())
-  {
-    if (commGetCommandType() == 'S')
-    {
-      if (commGetCommandValue() == 0)
-      {
-        commSetStreamEnabled(false);
-      }
-      else
-      {
-        commSetStreamEnabled(true);
-      }
+  //Serial.println(xh,5);
+  //commUpdate();
+  //commSendState(xh, dxh_filt);
+  // if (commCommandAvailable())
+  // {
+  //   if (commGetCommandType() == 'S')
+  //   {
+  //     if (commGetCommandValue() == 0)
+  //     {
+  //       commSetStreamEnabled(false);
+  //       commSendDebug("Streaming Stopped");
+  //     }
+  //     else
+  //     {
+  //       commSetStreamEnabled(true);
+  //       commSendDebug("Streaming Started");
+  //     }  
+  //   }
+  //   else if (commGetCommandType() == 'T')
+  //   {
+  //     currentEnvironment = (environment) (int) commGetCommandValue();
+  //     commSendDebug("Environment Changed");
       
-    }
-  }
+  //   }
+  //   else if (commGetCommandType() == 'K')
+  //   {
+  //     k_wall = commGetCommandValue();
+  //     commSendDebug("Wall Stiffness Changed");
+  //   }
+  //   else if (commGetCommandType() == 'P')
+  //   {
+  //     K_spring = commGetCommandValue();
+  //     commSendDebug("Spring Stiffness Changed");
+  //   }
+  //   else if (commGetCommandType() == 'B')
+  //   {
+  //     b_linear = commGetCommandValue();
+  //     commSendDebug("Damping Coefficient Changed");
+  //   }
+    
+  // }
 }
 

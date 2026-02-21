@@ -20,20 +20,18 @@ from serial_communication import SerialCommunication
 class HapkitController:
     """Interactive controller for Hapkit serial communication."""
     
-    def __init__(self, port: str = "COM6", baudrate: int = 115200, debug: bool = True):
+    def __init__(self, port: str = "COM6", baudrate: int = 115200):
         """
         Initialize the Hapkit controller.
         
         Args:
             port: Serial port (e.g., "COM3" on Windows, "/dev/ttyACM0" on Linux)
             baudrate: Baud rate (default 115200)
-            debug: Enable debug messages from Arduino
         """
         self.comm = SerialCommunication(
             port=port,
             baudrate=baudrate,
-            timeout=0.01,
-            debug_enabled=debug
+            timeout=0.01
         )
         self.running = False
         self.receive_thread = None
@@ -65,11 +63,9 @@ class HapkitController:
                 print(f"  [DEBUG] {self.comm.last_debug_message}")
                 self.comm.last_debug_message = ""
             
-            # Display position/velocity at moderate rate
-            if self.comm.packet_count > 0:
-                time.sleep(0.05)  # Update display ~20x per second
-            else:
-                time.sleep(0.001)
+            # Poll at ~200 Hz to keep up with Arduino 100 Hz stream rate
+            # This prevents data buffering and keeps communication smooth
+            time.sleep(0.005)  # 5ms = ~200 Hz polling rate
     
     def display_status(self):
         """Display current position and velocity."""
@@ -135,6 +131,7 @@ NOTE: Position/velocity data displays when streaming is enabled.
         print("="*70 + "\n")
         
         while self.running:
+            self.display_status()
             try:
                 user_input = input("\n> ").strip()
                 
@@ -209,9 +206,8 @@ NOTE: Position/velocity data displays when streaming is enabled.
 def main():
     """Main entry point."""
     # Configuration
-    PORT = "COM6"              # Change to your Arduino port
+    PORT = "COM5"              # Change to your Arduino port
     BAUDRATE = 115200
-    DEBUG_ENABLED = True
     
     print("╔════════════════════════════════════════════════════════════════╗")
     print("║         HAPKIT SERIAL COMMUNICATION INTERFACE v1.0             ║")
@@ -219,9 +215,8 @@ def main():
     print(f"\nConfiguration:")
     print(f"  Port:     {PORT}")
     print(f"  Baudrate: {BAUDRATE}")
-    print(f"  Debug:    {DEBUG_ENABLED}")
     
-    controller = HapkitController(port=PORT, baudrate=BAUDRATE, debug=DEBUG_ENABLED)
+    controller = HapkitController(port=PORT, baudrate=BAUDRATE)
     success = controller.run()
     
     sys.exit(0 if success else 1)
