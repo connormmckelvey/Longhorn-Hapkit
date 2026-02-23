@@ -12,8 +12,10 @@
 #include "haplink.h" // This library manages the serial communication between the Arduino and the PC.
 
 // Parameters that define what environment to render
-enum environment {VIRTUAL_WALL = 0, VIRTUAL_SPRING = 1, CONST_DAMPENER = 2, SIN_DAMPENER = 3, FISHROD_CAST = 4 };
-volatile environment currentEnvironment = VIRTUAL_WALL; // default environment
+enum environment {VIRTUAL_WALL = 0, VIRTUAL_SPRING = 1, CONST_DAMPENER = 2, BUMPS = 3, FISHROD_CAST = 4};
+// Stored as uint8_t because Haplink writes HL_UINT8 (1 byte). Storing as an enum
+// can corrupt the value on AVR where enums are typically 2 bytes.
+volatile uint8_t currentEnvironment = (uint8_t)BUMPS; // default environment
 
 // Pin Declarations
 const int PWMoutp = 4;
@@ -98,8 +100,9 @@ double dxh_threshold_for_forward = 0.01; // forward velocity threshold to throw
 double fishing_pullback_force = 30;     // N, resistance during pull back
 double fishing_throwing_bait_force = -50; // N, assist force during forward throw
 int8_t casting_status = READY;          // initial state
-
-
+// Parameters for bumps environment
+volatile float bumpSpacing_m = 0.015f;   // distance between bumps [m]
+volatile float bumpForceAmp = 25.0f;     // bump force amplitude [force units]
 
 // --------------------------
 // Haptic Loop
@@ -230,9 +233,25 @@ int8_t casting_status = READY;          // initial state
 
           //const dampener
           //***************************************************************
-          case SIN_DAMPENER:
-            
+          case BUMPS:
+            // Spatial bumps: defined by position (xh), not time.
+            // Render only the positive half-cycle as a "contact" bump.
+            if (bumpSpacing_m <= 1e-6f)
+            {
+              force = 0.0;
+              break;
+            }
+
+            if (sin((2.0 * 3.14159) * (xh / (double)bumpSpacing_m)) > 0.0)
+            {
+              force = ((double)bumpForceAmp * sin((2.0 * 3.14159) * (xh / (double)bumpSpacing_m))) - b_linear * dxh_filt;
+            }
+            else
+            {
+              force = 0.0;
+            }
           break;
+          
           
           // fishing casting
           //***************************************************************
@@ -254,6 +273,10 @@ int8_t casting_status = READY;          // initial state
               casting_status = -1;
             }
             
+          break;
+
+          default:
+            force = 0.0;
           break;
           }
           
@@ -319,11 +342,12 @@ void setup()
  haplink.registerParam(0, (void*)&currentEnvironment, HL_DataType::HL_UINT8); // Register the current environment variable to be set from the PC. You can register other parameters here as well (e.g., stiffness of the wall, stiffness of the spring, damping coefficient, etc.)
  haplink.registerParam(1, (void*)&k_wall, HL_DataType::HL_FLOAT);  // Use FLOAT - Arduino double is only 4 bytes
  haplink.registerParam(2, (void*)&K_spring, HL_DataType::HL_FLOAT);  // Use FLOAT
+ haplink.registerParam(3, (void*)&bumpSpacing_m, HL_DataType::HL_FLOAT);  // Use FLOAT
+ haplink.registerParam(4, (void*)&bumpForceAmp, HL_DataType::HL_FLOAT);  // Use FLOAT
  haplink.registerTelemetry(0, (void*)&xh, HL_DataType::HL_FLOAT);  // Use FLOAT - Arduino double is only 4 bytes
  haplink.registerTelemetry(1, (void*)&dxh_filt, HL_DataType::HL_FLOAT);  // Use FLOAT
- haplink.registerTelemetry(2, (void*)&loopCounter, HL_DataType::HL_UINT8);  // Debug: counter to verify haptic loop runs
- haplink.registerTelemetry(3, (void*)&pos, HL_DataType::HL_FLOAT);  // Debug: raw encoder position
-  
+ haplink.registerTelemetry(2, (void*)&loopCounter, HL_DataType::HL_UINT8);  // Debug: counter to verify haptic loop runs 
+ haplink.registerTelemetry(3, (void*)&pos, HL_DataType::HL_FLOAT);  // encoder counts (stored in pos)
  // Output Pins
  pinMode(PWMoutp, OUTPUT);
  pinMode(PWMoutn, OUTPUT);
