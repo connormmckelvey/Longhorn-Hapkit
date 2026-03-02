@@ -113,6 +113,13 @@ float b_wall;
 //Pi used for calculating periodic stuff
 float pi = 3.14159;
 
+//Forward declarations (allow calling functions before their definitions)
+void FK(float theta1, float theta5);
+void Jac();
+void Torque();
+void Velocity();
+float dist(float x1, float y1, float x2, float y2);
+
 void setup() {
   Serial.begin(115200);
   haplink.begin(Serial);
