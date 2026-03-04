@@ -1,95 +1,132 @@
-"""
-Simple communication test with Arduino main.cpp
+"""python/main.py
 
-Verify that Python can connect and communicate with the Hapkit Arduino device.
+Interactive Haplink connector.
+
+Connects to the Hapkit Arduino over Haplink and then *waits for you* to choose
+which mode/environment to run (param id 0).
+
+Notes:
+- If you're running the 1DOF firmware in src/main.cpp, mode 0-4 are:
+    VIRTUAL_WALL, VIRTUAL_SPRING, CONST_DAMPENER, BUMPS, FISHROD_CAST.
+- If you're running the 2DOF firmware in src/main2DOF.cpp, mode 0-8 are:
+    ZERO, JOYSTICK, GRID, CIRCLES, HARP, DAMP, WALL, JOYSTICK_DAMPED, BOX_OBSTACLE.
 """
 
 from haplink import Haplink, DataType
 import time
 
-# Connect to device
-haplink = Haplink('COM5', baudrate=115200)
-print("Connecting to Arduino...")
-if not haplink.connect():
-    print("ERROR: Failed to connect")
-    exit(1)
 
-print("✓ Connected!\n")
+MODES_1DOF = {
+    "VIRTUAL_WALL": 0,
+    "VIRTUAL_SPRING": 1,
+    "CONST_DAMPENER": 2,
+    "BUMPS": 3,
+    "FISHROD_CAST": 4,
+}
 
-# Register parameters (must match IDs in Arduino main.cpp)
-print("Registering parameters...")
-haplink.register_param(0, 'environment', DataType.UINT8)
-haplink.register_param(1, 'k_wall', DataType.FLOAT)  # Changed to FLOAT - Arduino double is 4 bytes
-haplink.register_param(2, 'K_spring', DataType.FLOAT)  # Changed to FLOAT
+MODES_2DOF = {
+    "ZERO": 0,
+    "JOYSTICK": 1,
+    "GRID": 2,
+    "CIRCLES": 3,
+    "HARP": 4,
+    "DAMP": 5,
+    "WALL": 6,
+    "JOYSTICK_DAMPED": 7,
+    "BOX_OBSTACLE": 8,
+}
 
-# Register telemetry (must match IDs in Arduino main.cpp)
-print("Registering telemetry...")
-haplink.register_telemetry(0, 'position', DataType.FLOAT)  # Changed to FLOAT - Arduino double is 4 bytes
-haplink.register_telemetry(1, 'velocity', DataType.FLOAT)  # Changed to FLOAT
-print("✓ Registered\n")
 
-# Test: Read telemetry for 5 seconds
-print("Reading telemetry for 5 seconds...")
-print("(Debug mode enabled for first few updates)")
-print("-" * 60)
-print(f"{'Time(s)':>8} | {'Position':>12} | {'Velocity':>12}")
-print("-" * 60)
+def _parse_mode(user_text: str) -> int:
+    text = user_text.strip()
+    if not text:
+        raise ValueError("empty")
 
-start_time = time.time()
-loops = 0
-while time.time() - start_time < 5.0:
-    # Enable debug for first 3 updates to see what's happening
-    debug_enabled = loops < 3
-    packets = haplink.update(debug=debug_enabled)
-    
-    pos = haplink.get_telemetry('position')
-    vel = haplink.get_telemetry('velocity')
-    elapsed = time.time() - start_time
-    
-    pos_str = f"{pos:.6f}" if pos is not None else "waiting"
-    vel_str = f"{vel:.6f}" if vel is not None else "waiting"
-    
-    print(f"{elapsed:>8.2f} | {pos_str:>12} | {vel_str:>12} | pkts:{packets}")
-    loops += 1
-    time.sleep(0.1)
+    upper = text.upper()
+    if upper in MODES_1DOF:
+        return MODES_1DOF[upper]
+    if upper in MODES_2DOF:
+        return MODES_2DOF[upper]
 
-print("-" * 60)
-print()
+    # Accept ints like: 8, 0x08
+    return int(text, 0)
 
-# Test: Change environment parameter
-print("Testing parameter write...")
-print(f"Setting environment to 0 (VIRTUAL_WALL)...")
-haplink.set_param('environment', 0x00)
-print(f"✓ Sent\n")
 
-# Read telemetry again for 3 seconds with new environment
-print("Reading telemetry with new environment...")
-print("-" * 60)
-print(f"{'Time(s)':>8} | {'Position':>12} | {'Velocity':>12}")
-print("-" * 60)
+def _print_mode_help() -> None:
+    print("Available named modes (1DOF src/main.cpp):")
+    for name, val in MODES_1DOF.items():
+        print(f"  {val}: {name}")
+    print("\nAvailable named modes (2DOF src/main2DOF.cpp):")
+    for name, val in MODES_2DOF.items():
+        print(f"  {val}: {name}")
+    print()
 
-start_time = time.time()
-while time.time() - start_time < 3.0:
-    haplink.update()
-    
-    pos = haplink.get_telemetry('position')
-    vel = haplink.get_telemetry('velocity')
-    elapsed = time.time() - start_time
-    
-    pos_str = f"{pos:.6f}" if pos is not None else "waiting"
-    vel_str = f"{vel:.6f}" if vel is not None else "waiting"
-    
-    print(f"{elapsed:>8.2f} | {pos_str:>12} | {vel_str:>12}")
-    time.sleep(0.1)
+def main() -> None:
+    # Connect to device
+    haplink = Haplink("COM5", baudrate=115200)
+    print("Connecting to Arduino...")
+    if not haplink.connect():
+        raise SystemExit("ERROR: Failed to connect")
 
-print("-" * 60)
-print()
+    print("✓ Connected!\n")
 
-# Show final state
-print("Summary:")
-print(f"  Position: {haplink.get_telemetry('position')}")
-print(f"  Velocity: {haplink.get_telemetry('velocity')}")
-print(f"  Environment: {haplink.get_param_value('environment')}")
+    # Register parameters.
+    # Param 0 exists in both firmwares (1DOF: environment, 2DOF: hapticMode).
+    # The name here is only on the PC side.
+    print("Registering parameters...")
+    haplink.register_param(0, "mode", DataType.UINT8)
 
-haplink.disconnect()
-print("\n✓ Test complete!")
+    # These extra params/telemetry match src/main.cpp (1DOF). If you're running the
+    # 2DOF firmware, they'll just remain None / unused.
+    haplink.register_param(1, "k_wall", DataType.FLOAT)
+    haplink.register_param(2, "K_spring", DataType.FLOAT)
+
+    print("Registering telemetry...")
+    haplink.register_telemetry(0, "position", DataType.FLOAT)
+    haplink.register_telemetry(1, "velocity", DataType.FLOAT)
+    print("✓ Registered\n")
+
+    _print_mode_help()
+    print("Waiting for you to choose a mode.\n"
+          "- Enter a number (e.g. 8 or 0x08) or a name (e.g. BOX_OBSTACLE).\n"
+          "- Press Enter to just poll telemetry once.\n"
+          "- Type 'help' to reprint modes, 'q' to quit.\n")
+
+    try:
+        while True:
+            # Keep the link alive / update incoming packets.
+            haplink.update(debug=False)
+
+            user = input("mode> ").strip()
+            if user == "":
+                pos = haplink.get_telemetry("position")
+                vel = haplink.get_telemetry("velocity")
+                pos_str = f"{pos:.6f}" if pos is not None else "waiting"
+                vel_str = f"{vel:.6f}" if vel is not None else "waiting"
+                print(f"telemetry: position={pos_str}  velocity={vel_str}")
+                continue
+
+            lower = user.lower()
+            if lower in {"q", "quit", "exit"}:
+                break
+            if lower in {"h", "help", "?"}:
+                _print_mode_help()
+                continue
+
+            mode_val = _parse_mode(user)
+            haplink.set_param("mode", mode_val)
+            # Give the device a couple update cycles to apply.
+            for _ in range(3):
+                haplink.update(debug=False)
+                time.sleep(0.02)
+
+            print(f"✓ Sent mode -> {mode_val}")
+
+    except KeyboardInterrupt:
+        print("\nExiting...")
+    finally:
+        haplink.disconnect()
+
+
+if __name__ == "__main__":
+    main()
