@@ -7,6 +7,13 @@
 
 #include <Encoder.h>
 #include "haplink.h"
+#include "haptic_objects_2d.h"
+
+// Haplink uses Serial for a binary protocol.
+// Raw Serial.print() debugging can corrupt Haplink packets.
+#ifndef ENABLE_DEBUG_SERIAL
+#define ENABLE_DEBUG_SERIAL 0
+#endif
 
 enum hModes{
   ZERO,
@@ -16,10 +23,15 @@ enum hModes{
   HARP,
   DAMP,
   WALL,
-  JOYSTICK_DAMPED
+  JOYSTICK_DAMPED,
+  BOX_OBSTACLE
 };
 
-volatile hModes hapticMode = JOYSTICK;
+volatile hModes hapticMode = BOX_OBSTACLE;
+
+// Single editable rectangle for BOX_OBSTACLE mode.
+// Units match nX/nY in this firmware.
+rect_t box_rect = { {0.01f, -0.05f}, 0.05f, 0.05f };
 
 //Motor/encoder 1 pins
 const int pwm1 = 9;
@@ -58,8 +70,14 @@ float X, Y;
 //End effector location normalized to workspace (0,0)
 float nX, nY, lastnX, lastnY, vX, vY, lastVx, lastVy;
 
+// Minimal telemetry to keep Haplink PC-side clients happy.
+// The Python client considers the device connected only after it receives
+// at least one valid Haplink packet.
+float hl_tel_nx = 0.0f;
+float hl_tel_ny = 0.0f;
+
 //1ms loops -- NOTE: this is not currently true :(
-float dt = .001;
+float dt = .003;
 
 // define filter "r" based on cutoff frequency
 float fc = 30;                //cutoff frequency [Hz]
@@ -125,6 +143,23 @@ void setup() {
   haplink.begin(Serial);
   haplink.registerParam(0, (void*)&hapticMode, HL_DataType::HL_UINT8);
 
+  // Telemetry ids:
+  //   0: normalized X
+  //   1: normalized Y
+  haplink.registerTelemetry(0, (void*)&hl_tel_nx, HL_DataType::HL_FLOAT);
+  haplink.registerTelemetry(1, (void*)&hl_tel_ny, HL_DataType::HL_FLOAT);
+
+  // Expose the box rectangle over Haplink so Python can move/resize it.
+  // Param ids:
+  //   10: bottom_left.x
+  //   11: bottom_left.y
+  //   12: width
+  //   13: height
+  haplink.registerParam(10, (void*)&box_rect.bottom_left.x, HL_DataType::HL_FLOAT);
+  haplink.registerParam(11, (void*)&box_rect.bottom_left.y, HL_DataType::HL_FLOAT);
+  haplink.registerParam(12, (void*)&box_rect.width, HL_DataType::HL_FLOAT);
+  haplink.registerParam(13, (void*)&box_rect.height, HL_DataType::HL_FLOAT);
+
   TCCR1A = (1 << COM1A1) | (1 << COM1B1); //clears OC1 on compare match when up-counting, sets on match when down-counting
   TCCR1B = (1 << WGM13) | (1 << CS10); //waveform generation mode 8 (phase/freq correct, ICR1 top), prescaler = 1
   ICR1 = 400; //ICR1 defines TOP in WGM8
@@ -154,6 +189,8 @@ void setup() {
 }
 
 void loop() {
+
+  const unsigned long loop_t0_us = micros();
   
   //encoder positions 
   pos1 = enc1.read();
@@ -168,6 +205,21 @@ void loop() {
   //get forward kinematics
   FK(t1,t5);
   Velocity();
+
+  // Update telemetry values (keep separate from the main state vars).
+  hl_tel_nx = nX;
+  hl_tel_ny = nY;
+
+  // Send a small amount of telemetry at a modest rate so the PC can detect
+  // the device (and optionally visualize state) without saturating serial.
+  static unsigned long lastTelUs = 0;
+  const unsigned long TEL_PERIOD_US = 20000; // 50 Hz
+  const unsigned long nowUs = micros();
+  if (nowUs - lastTelUs >= TEL_PERIOD_US) {
+    lastTelUs = nowUs;
+    haplink.sendTelemetry(0);
+    haplink.sendTelemetry(1);
+  }
 
     switch(hapticMode){
       //Zero/home
@@ -282,11 +334,27 @@ void loop() {
           Fy = -b_damping*vY;
         }
         break;
+
+      case BOX_OBSTACLE: {
+        point_t pos;
+        pos.x = nX;
+        pos.y = nY;
+
+        vector2_t vel;
+        vel.x = vX;
+        vel.y = vY;
+
+        vector2_t f = computeForceForRect(box_rect, pos, vel);
+        
+        Fx = f.x;
+        Fy = f.y;
+        break;
+      }
     }
 
 
   //Don't render any forces if you're outside the workspace(ish)
-  if(abs(nY) > 0.06 || abs(nX) > 0.06){
+  if(abs(nY) > 0.08 || abs(nX) > 0.08){
     Fx = 0;
     Fy = 0;
   }
@@ -341,10 +409,10 @@ void loop() {
   OCR1B = out2;
 
   //Print stuff for debugging (runs faster without this)
-  Serial.print(nX);
-  Serial.print(" ");
-  Serial.print(nY);
-  Serial.println();
+  // Serial.print(nX);
+  // Serial.print(" ");
+  // Serial.print(nY);
+  // Serial.println();
   
   //Update values for previous positions
   lastPos1 = pos1;
@@ -353,6 +421,20 @@ void loop() {
   lastnY = nY;
   lastVx = vX;
   lastVy = vY;
+
+  // Loop execution time in microseconds (not including this print itself)
+  static uint16_t printCounter = 0;
+  const uint16_t PRINT_EVERY_N_LOOPS = 100;
+  if (++printCounter >= PRINT_EVERY_N_LOOPS) {
+    printCounter = 0;
+  #if ENABLE_DEBUG_SERIAL
+    Serial.println(micros() - loop_t0_us);
+    Serial.print("x: ");
+    Serial.print(nX);
+    Serial.print(" y: ");
+    Serial.println(nY);
+  #endif
+  }
 
 }
 

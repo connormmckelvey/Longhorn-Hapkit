@@ -1,0 +1,286 @@
+"""python/rect_editor_2dof.py
+
+Minimal interactive rectangle editor for the 2DOF firmware (src/main2DOF.cpp).
+
+Protocol:
+- Uses Haplink parameter ids:
+    0                 : mode (uint8)
+    10 + i*4 + 0      : rect[i].bottom_left.x (float)
+    10 + i*4 + 1      : rect[i].bottom_left.y (float)
+    10 + i*4 + 2      : rect[i].width (float)
+    10 + i*4 + 3      : rect[i].height (float)
+
+Usage:
+- Run: python rect_editor_2dof.py
+- A window opens where you can:
+    - Set `mode` (param id 0)
+    - Edit rectangle x/y/w/h (param ids 10..13)
+    - See the rectangle rendered on a canvas
+
+Notes:
+- Do not enable raw Serial.print() debugging on the Arduino while using Haplink.
+
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import time
+import tkinter as tk
+from tkinter import messagebox
+
+from haplink import Haplink, DataType
+
+
+PORT = "COM5"
+BAUD = 115200
+RECT_COUNT = 1
+RECT_PARAM_BASE = 10
+
+
+@dataclass
+class RectState:
+    x: float
+    y: float
+    w: float
+    h: float
+
+
+class RectViewer:
+    def __init__(
+        self,
+        root: tk.Tk,
+        *,
+        view_xmin: float = -0.12,
+        view_xmax: float = 0.12,
+        view_ymin: float = -0.12,
+        view_ymax: float = 0.12,
+        width_px: int = 480,
+        height_px: int = 480,
+    ) -> None:
+        self._root = root
+        self._view_xmin = view_xmin
+        self._view_xmax = view_xmax
+        self._view_ymin = view_ymin
+        self._view_ymax = view_ymax
+        self._width_px = width_px
+        self._height_px = height_px
+
+        self._canvas = tk.Canvas(root, width=width_px, height=height_px)
+        self._canvas.pack(fill=tk.BOTH, expand=True)
+
+        self._status = tk.StringVar(value="")
+        self._label = tk.Label(root, textvariable=self._status, anchor="w")
+        self._label.pack(fill=tk.X)
+
+        self._last_rect = RectState(0.0, 0.0, 0.0, 0.0)
+
+        # Create items once, then just update their coords.
+        self._x_axis = self._canvas.create_line(0, 0, 1, 1, dash=(3, 3), fill="gray50")
+        self._y_axis = self._canvas.create_line(0, 0, 1, 1, dash=(3, 3), fill="gray50")
+        self._x_label = self._canvas.create_text(0, 0, text="x", anchor="ne", fill="gray40")
+        self._y_label = self._canvas.create_text(0, 0, text="y", anchor="nw", fill="gray40")
+        self._rect_item = self._canvas.create_rectangle(0, 0, 1, 1)
+
+        # Keep axes behind the rectangle.
+        self._canvas.tag_lower(self._x_axis)
+        self._canvas.tag_lower(self._y_axis)
+        self._canvas.tag_lower(self._x_label)
+        self._canvas.tag_lower(self._y_label)
+
+        self._update_axes()
+
+        # Keep mapping accurate if the user resizes the window.
+        self._canvas.bind("<Configure>", self._on_canvas_resize)
+
+    def _on_canvas_resize(self, event: tk.Event) -> None:  # type: ignore[name-defined]
+        # Tk passes an event with current canvas size.
+        if getattr(event, "width", None) and getattr(event, "height", None):
+            self._width_px = int(event.width)
+            self._height_px = int(event.height)
+            self.set_rect(self._last_rect)
+
+    def _world_to_canvas(self, x: float, y: float) -> tuple[float, float]:
+        # Map world coords to canvas pixels with y-up in world.
+        sx = (x - self._view_xmin) / (self._view_xmax - self._view_xmin)
+        sy = (y - self._view_ymin) / (self._view_ymax - self._view_ymin)
+        cx = sx * self._width_px
+        cy = (1.0 - sy) * self._height_px
+        return cx, cy
+
+    def _update_axes(self) -> None:
+        # Draw axes at x=0 and y=0 (world coords), if they intersect the view.
+        has_x_axis = self._view_ymin <= 0.0 <= self._view_ymax
+        has_y_axis = self._view_xmin <= 0.0 <= self._view_xmax
+
+        if has_x_axis:
+            x0, y0 = self._world_to_canvas(self._view_xmin, 0.0)
+            x1, y1 = self._world_to_canvas(self._view_xmax, 0.0)
+            self._canvas.coords(self._x_axis, x0, y0, x1, y1)
+            self._canvas.itemconfigure(self._x_axis, state="normal")
+            # Put the 'x' label near the right end.
+            self._canvas.coords(self._x_label, x1 - 4, y1 - 4)
+            self._canvas.itemconfigure(self._x_label, state="normal")
+        else:
+            self._canvas.itemconfigure(self._x_axis, state="hidden")
+            self._canvas.itemconfigure(self._x_label, state="hidden")
+
+        if has_y_axis:
+            x0, y0 = self._world_to_canvas(0.0, self._view_ymin)
+            x1, y1 = self._world_to_canvas(0.0, self._view_ymax)
+            self._canvas.coords(self._y_axis, x0, y0, x1, y1)
+            self._canvas.itemconfigure(self._y_axis, state="normal")
+            # Put the 'y' label near the top end.
+            self._canvas.coords(self._y_label, x1 + 4, y1 + 4)
+            self._canvas.itemconfigure(self._y_label, state="normal")
+        else:
+            self._canvas.itemconfigure(self._y_axis, state="hidden")
+            self._canvas.itemconfigure(self._y_label, state="hidden")
+
+    def set_rect(self, rect: RectState) -> None:
+        self._last_rect = RectState(rect.x, rect.y, rect.w, rect.h)
+        self._update_axes()
+        x0, y0 = rect.x, rect.y
+        x1, y1 = rect.x + rect.w, rect.y + rect.h
+
+        c0x, c0y = self._world_to_canvas(x0, y0)
+        c1x, c1y = self._world_to_canvas(x1, y1)
+
+        # Tk expects (x0,y0,x1,y1) in canvas space. Ensure proper ordering.
+        left = min(c0x, c1x)
+        right = max(c0x, c1x)
+        top = min(c0y, c1y)
+        bottom = max(c0y, c1y)
+
+        self._canvas.coords(self._rect_item, left, top, right, bottom)
+        self._status.set(f"rect: x={rect.x:.4f}  y={rect.y:.4f}  w={rect.w:.4f}  h={rect.h:.4f}")
+
+
+def _register_params(link: Haplink) -> None:
+    link.register_param(0, "mode", DataType.UINT8)
+    for i in range(RECT_COUNT):
+        link.register_param(RECT_PARAM_BASE + i * 4 + 0, f"rect{i}_x", DataType.FLOAT)
+        link.register_param(RECT_PARAM_BASE + i * 4 + 1, f"rect{i}_y", DataType.FLOAT)
+        link.register_param(RECT_PARAM_BASE + i * 4 + 2, f"rect{i}_w", DataType.FLOAT)
+        link.register_param(RECT_PARAM_BASE + i * 4 + 3, f"rect{i}_h", DataType.FLOAT)
+
+
+def _pump(link: Haplink, n: int = 3) -> None:
+    for _ in range(n):
+        link.update(debug=False)
+
+
+def _safe_float(text: str) -> float:
+    return float(text.strip())
+
+
+def _safe_int(text: str) -> int:
+    return int(text.strip(), 0)
+
+
+def main() -> None:
+    link = Haplink(PORT, baudrate=BAUD)
+    if not link.connect():
+        # Avoid relying on terminal output (GUI-first tool).
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("Haplink", f"Failed to connect to {PORT} @ {BAUD}")
+        raise SystemExit(1)
+
+    _register_params(link)
+    _pump(link)
+
+    root = tk.Tk()
+    root.title("Hapkit Rect Editor (2DOF)")
+
+    viewer = RectViewer(root)
+
+    controls = tk.Frame(root)
+    controls.pack(fill=tk.X, padx=8, pady=8)
+
+    # Default rect matches the firmware default in src/main2DOF.cpp (best effort).
+    rect = RectState(x=0.01, y=-0.05, w=0.05, h=0.05)
+    viewer.set_rect(rect)
+
+    # ---- Mode control ----
+    mode_frame = tk.Frame(controls)
+    mode_frame.pack(fill=tk.X)
+
+    tk.Label(mode_frame, text="mode:").pack(side=tk.LEFT)
+    mode_var = tk.StringVar(value="8")
+    mode_entry = tk.Entry(mode_frame, textvariable=mode_var, width=10)
+    mode_entry.pack(side=tk.LEFT, padx=4)
+
+    status_var = tk.StringVar(value=f"Connected to {PORT} @ {BAUD}")
+    status_label = tk.Label(controls, textvariable=status_var, anchor="w")
+    status_label.pack(fill=tk.X, pady=(6, 0))
+
+    # ---- Rect control ----
+    rect_frame = tk.Frame(controls)
+    rect_frame.pack(fill=tk.X, pady=(8, 0))
+
+    def _make_labeled_entry(parent: tk.Widget, label: str, initial: str) -> tk.StringVar:
+        tk.Label(parent, text=label).pack(side=tk.LEFT)
+        v = tk.StringVar(value=initial)
+        e = tk.Entry(parent, textvariable=v, width=10)
+        e.pack(side=tk.LEFT, padx=4)
+        return v
+
+    x_var = _make_labeled_entry(rect_frame, "x:", f"{rect.x}")
+    y_var = _make_labeled_entry(rect_frame, "y:", f"{rect.y}")
+    w_var = _make_labeled_entry(rect_frame, "w:", f"{rect.w}")
+    h_var = _make_labeled_entry(rect_frame, "h:", f"{rect.h}")
+
+    def _set_mode() -> None:
+        try:
+            mode_val = _safe_int(mode_var.get())
+            link.set_param("mode", mode_val)
+            status_var.set(f"Sent mode -> {mode_val}")
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Mode", str(exc))
+
+    def _apply_rect() -> None:
+        try:
+            rect.x = _safe_float(x_var.get())
+            rect.y = _safe_float(y_var.get())
+            rect.w = _safe_float(w_var.get())
+            rect.h = _safe_float(h_var.get())
+
+            link.set_param("rect0_x", rect.x)
+            link.set_param("rect0_y", rect.y)
+            link.set_param("rect0_w", rect.w)
+            link.set_param("rect0_h", rect.h)
+            viewer.set_rect(rect)
+            status_var.set("Updated rect")
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Rectangle", str(exc))
+
+    btn_frame = tk.Frame(controls)
+    btn_frame.pack(fill=tk.X, pady=(8, 0))
+
+    tk.Button(btn_frame, text="Set mode", command=_set_mode).pack(side=tk.LEFT)
+    tk.Button(btn_frame, text="Apply rect", command=_apply_rect).pack(side=tk.LEFT, padx=6)
+
+    def _on_close() -> None:
+        try:
+            link.disconnect()
+        except Exception:
+            pass
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", _on_close)
+
+    def _tick() -> None:
+        try:
+            link.update(debug=False)
+        except Exception:
+            # If something transient happens, just keep the UI alive.
+            pass
+        root.after(20, _tick)
+
+    root.after(20, _tick)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
