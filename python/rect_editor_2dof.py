@@ -28,6 +28,7 @@ from dataclasses import dataclass
 import time
 import tkinter as tk
 from tkinter import messagebox
+from typing import Optional, Tuple
 
 from haplink import Haplink, DataType
 
@@ -81,6 +82,7 @@ class RectViewer:
         self._x_label = self._canvas.create_text(0, 0, text="x", anchor="ne", fill="gray40")
         self._y_label = self._canvas.create_text(0, 0, text="y", anchor="nw", fill="gray40")
         self._rect_item = self._canvas.create_rectangle(0, 0, 1, 1)
+        self._ee_item = self._canvas.create_oval(0, 0, 1, 1, fill="blue", outline="")
 
         # Keep axes behind the rectangle.
         self._canvas.tag_lower(self._x_axis)
@@ -100,7 +102,7 @@ class RectViewer:
             self._height_px = int(event.height)
             self.set_rect(self._last_rect)
 
-    def _world_to_canvas(self, x: float, y: float) -> tuple[float, float]:
+    def _world_to_canvas(self, x: float, y: float) -> Tuple[float, float]:
         # Map world coords to canvas pixels with y-up in world.
         sx = (x - self._view_xmin) / (self._view_xmax - self._view_xmin)
         sy = (y - self._view_ymin) / (self._view_ymax - self._view_ymin)
@@ -155,6 +157,24 @@ class RectViewer:
         self._canvas.coords(self._rect_item, left, top, right, bottom)
         self._status.set(f"rect: x={rect.x:.4f}  y={rect.y:.4f}  w={rect.w:.4f}  h={rect.h:.4f}")
 
+    def set_end_effector(self, x: Optional[float], y: Optional[float]) -> None:
+        if x is None or y is None:
+            self._canvas.itemconfigure(self._ee_item, state="hidden")
+            return
+
+        in_view = (
+            self._view_xmin <= x <= self._view_xmax
+            and self._view_ymin <= y <= self._view_ymax
+        )
+        if not in_view:
+            self._canvas.itemconfigure(self._ee_item, state="hidden")
+            return
+
+        cx, cy = self._world_to_canvas(x, y)
+        r = 4
+        self._canvas.coords(self._ee_item, cx - r, cy - r, cx + r, cy + r)
+        self._canvas.itemconfigure(self._ee_item, state="normal")
+
 
 def _register_params(link: Haplink) -> None:
     link.register_param(0, "mode", DataType.UINT8)
@@ -163,6 +183,15 @@ def _register_params(link: Haplink) -> None:
         link.register_param(RECT_PARAM_BASE + i * 4 + 1, f"rect{i}_y", DataType.FLOAT)
         link.register_param(RECT_PARAM_BASE + i * 4 + 2, f"rect{i}_w", DataType.FLOAT)
         link.register_param(RECT_PARAM_BASE + i * 4 + 3, f"rect{i}_h", DataType.FLOAT)
+
+
+def _register_telemetry(link: Haplink) -> None:
+    # Must match the firmware telemetry ids.
+    # In src/main2DOF.cpp we send:
+    #   0: normalized X
+    #   1: normalized Y
+    link.register_telemetry(0, "ee_x", DataType.FLOAT)
+    link.register_telemetry(1, "ee_y", DataType.FLOAT)
 
 
 def _pump(link: Haplink, n: int = 3) -> None:
@@ -188,6 +217,7 @@ def main() -> None:
         raise SystemExit(1)
 
     _register_params(link)
+    _register_telemetry(link)
     _pump(link)
 
     root = tk.Tk()
@@ -214,6 +244,10 @@ def main() -> None:
     status_var = tk.StringVar(value=f"Connected to {PORT} @ {BAUD}")
     status_label = tk.Label(controls, textvariable=status_var, anchor="w")
     status_label.pack(fill=tk.X, pady=(6, 0))
+
+    ee_var = tk.StringVar(value="EE: waiting")
+    ee_label = tk.Label(controls, textvariable=ee_var, anchor="w")
+    ee_label.pack(fill=tk.X)
 
     # ---- Rect control ----
     rect_frame = tk.Frame(controls)
@@ -270,12 +304,33 @@ def main() -> None:
 
     root.protocol("WM_DELETE_WINDOW", _on_close)
 
+    last_ee_ui_update = 0.0
+
     def _tick() -> None:
+        nonlocal last_ee_ui_update
         try:
             link.update(debug=False)
         except Exception:
             # If something transient happens, just keep the UI alive.
             pass
+
+        # Update end-effector display at a modest rate.
+        now = time.monotonic()
+        if now - last_ee_ui_update >= 0.05:  # 20 Hz
+            last_ee_ui_update = now
+            try:
+                ee_x = link.get_telemetry("ee_x")
+                ee_y = link.get_telemetry("ee_y")
+            except Exception:
+                ee_x = None
+                ee_y = None
+
+            if ee_x is None or ee_y is None:
+                ee_var.set("EE: waiting")
+            else:
+                ee_var.set(f"EE: x={ee_x:.4f}  y={ee_y:.4f}")
+            viewer.set_end_effector(ee_x, ee_y)
+
         root.after(20, _tick)
 
     root.after(20, _tick)
