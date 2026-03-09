@@ -25,16 +25,15 @@ typedef struct Rect{
     float height;
 } rect_t;
 
-static inline vector2_t computeForceForRect(rect_t rect, point_t end_effector_pos, vector2_t end_effector_vel){
+vector2_t computeForceForRect(rect_t rect, point_t end_effector_pos, vector2_t end_effector_vel){
     vector2_t force_to_apply = {0, 0};
     if (end_effector_pos.x < rect.bottom_left.x || end_effector_pos.x > rect.bottom_left.x + rect.width || end_effector_pos.y < rect.bottom_left.y || end_effector_pos.y > rect.bottom_left.y + rect.height)
     {
         return force_to_apply;
     }
-    //inside the box-- apply forces to push out
-    // Apply force only along the closest face normal.
-    const float k = 500.0f; //spring constant (match main2DOF WALL mode scale)
-    const float b = 2.0f;   //damping (match main2DOF WALL mode scale)
+
+    const float k = 500.0f; //spring constant
+    const float b = 2.0f;   //damping
 
     const float distance_to_left = end_effector_pos.x - rect.bottom_left.x;
     const float distance_to_right = (rect.bottom_left.x + rect.width) - end_effector_pos.x;
@@ -77,10 +76,6 @@ static inline vector2_t computeForceForRect(rect_t rect, point_t end_effector_po
     return force_to_apply;
 }
 
-static inline vector2_t computeForceForLine(line_t line, point_t end_effector_pos, vector2_t end_effector_vel){
-    (void)line;
-    (void)end_effector_pos;
-    (void)end_effector_vel;
-    vector2_t force_to_apply = {0, 0};
-    return force_to_apply;
+vector2_t computeForceForLine(line_t line, point_t end_effector_pos, vector2_t end_effector_vel){
+    return (vector2_t){0, 0};
 }
