@@ -1,9 +1,7 @@
 //IF YOU USE THIS CODE, MAKE SURE THE PWMout WIRE IS MOVED TO PIN 9
 //Write all serial messages in loop(), do not do serial communication in ISR
-
-//Hapkit basic environments code + CAR STEERING GAME mode
+//Hapkit basic environments code
 //Base: Ann Majewicz Fey and Ross Neuman 2/13/26
-//Car game mode added for steering-game camp project
 
 #include <Encoder.h>
 #include <Haplink.h>
@@ -57,24 +55,14 @@ enum hModes{
   SPRING_DAMPER,
   WALL,
   BUMP_VALLEY,
-  TEXTURE,
-  CAR_GAME
+  TEXTURE
 };
 
 // pick which mode is there from the start
 hModes hapticMode = SPRING;
 //volatile lets the compiler know this value may change due to outside factors (e.g. keyboard press or PC command)
 
-// ---- Car game variables ----
-float road_pull = 0;       // signed force nudging the handle toward the curve's "correct" angle
-int16_t surface_state = 0; // 0 = normal road, 1 = rumble strip, 2 = off-road, 3 = crash
-float game_speed = 0;      // normalized 0 (stopped) to 1 (max speed)
-
-// internal state for the car game (not sent over Haplink, just used locally)
-int16_t prev_surface_state = 0;
-int crash_timer = 0;          // counts down (in ms) while a crash jolt is playing
 unsigned long isr_ms = 0;     // free-running millisecond counter, incremented in the ISR
-
 
 // Edit this function if you want to add variables that can be sent or recived from any provided python script via Haplink
 // Parameters are values sent to the Hapkit, Telemetry are values sent from the Hapkit
@@ -82,11 +70,6 @@ unsigned long isr_ms = 0;     // free-running millisecond counter, incremented i
 // simply add a line using register_____(a new ID value, &<variable>, type)
 void registerHaplinkVariables(){
   haplink.registerParam(0, &hapticMode, HL_INT16);
-
-  // car game params (sent from the PC each frame)
-  haplink.registerParam(1, &road_pull, HL_FLOAT);
-  haplink.registerParam(2, &surface_state, HL_INT16);
-  haplink.registerParam(3, &game_speed, HL_FLOAT);
 
   haplink.registerTelemetry(0, &handle_pos, HL_FLOAT);
   haplink.registerTelemetry(1, &handle_vel, HL_FLOAT);
@@ -239,56 +222,6 @@ float texture(float x, float v){
   }
 }
 
-// ---- CAR STEERING GAME ----
-// x = handle position (cm), v = handle velocity (cm/s)
-//   1) a self-centering spring, stiffer at higher game_speed
-//   2) road_pull: a tug toward the "correct" wheel angle for the upcoming curve
-//   3) surface effects: rumble strip buzz, off-road drag, or a crash jolt
-float carGame(float x, float v){
-  float k_center = 90.0;            // Increased from 55 for much heavier steering feel
-  float b_base = 6.0;               // Base damping
-  float b_center_extra = 10.0;      // Extra damping near center (middle of the steer)
-  float pull_gain = 18.0;           // scales road_pull (from PC) into an actual force (increased slightly)
-  float speed_stiffness_gain = 45.0; // extra stiffness added at higher speed (increased from 35)
-
-  // ---- crash jolt (overrides everything else while it plays) ----
-  // detect a NEW crash (rising edge) so we only trigger once per crash event
-  if (surface_state == 3 && prev_surface_state != 3) {
-    crash_timer = 200; // length of jolt, in ms
-  }
-  prev_surface_state = surface_state;
-
-  if (crash_timer > 0) {
-    // strong, decaying, alternating jolt
-    float decay = crash_timer / 200.0;
-    float f = 300.0 * decay;
-    if ((crash_timer % 20) >= 10) f = -f; // alternate direction for a "rattle" feel
-    crash_timer--;
-    return f;
-  }
-
-  // ---- base self-centering spring ----
-  float force = -(k_center + speed_stiffness_gain * game_speed) * x;
-  
-  // Damping is dynamically boosted close to the middle of the steer
-  float b_dynamic = b_base + (b_center_extra / (1.0 + abs(x)));
-  force += -b_dynamic * v;
-
-  // ---- road pull toward the curve's correct angle ----
-  force += pull_gain * road_pull;
-
-  // ---- surface effects ----
-  if (surface_state == 1) {
-    // rumble strip: fast buzz, ~40 Hz
-    force += 60.0 * sin(2 * M_PI * 40.0 * (isr_ms * dt));
-  } else if (surface_state == 2) {
-    // off-road: heavy, sluggish wheel
-    force += -12.0 * v;
-  }
-
-  return force;
-}
-
 // The "superloop" below can now just be used for things like serial communication
 // runs in 2ms (all of that time is spent in sending telemetry over serial)
 // haplink.update() runs in us even if receiving a packet
@@ -298,19 +231,6 @@ void loop() {
   //digitalWrite(13, HIGH); //turn on LED to indicate we are sending telemetry
   haplink.update();
   //digitalWrite(13, LOW); //turn off LED to indicate we are done sending telemetry
-
-  // allow serial monitor to read for a new mode and switch accordingly
-  if(Serial.available()){
-    char s = Serial.read();
-    if (s == '0') hapticMode = ZERO;
-    if (s == '1') hapticMode = SPRING;
-    if (s == '2') hapticMode = DAMPER;
-    if (s == '3') hapticMode = SPRING_DAMPER;
-    if (s == '4') hapticMode = WALL;
-    if (s == '5') hapticMode = BUMP_VALLEY;
-    if (s == '6') hapticMode = TEXTURE;
-    if (s == '7') hapticMode = CAR_GAME;
-  }
 
   haplink.sendAllTelemetry();
   //digitalWrite(13, LOW); //turn off LED to indicate we are done sending telemetry
@@ -364,10 +284,7 @@ ISR(TIMER2_COMPA_vect) {
     case TEXTURE:
       duty = texture(handle_pos,handle_vel);
       break;
-    case CAR_GAME:
-      duty = carGame(handle_pos, handle_vel);
-      break;
-  }
+    }
 
   // command motor based on duty cycle (-400 to 400)
   setMotor(duty);
