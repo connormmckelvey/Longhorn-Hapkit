@@ -136,12 +136,14 @@ class HapticLink:
         if port:
             try:
                 self.link = Haplink(port, baudrate=BAUD_RATE)
-                self.link.connect()
+                if not self.link.connect():
+                    raise ConnectionError("Device did not respond (is it streaming telemetry?)")
                 self.link.register_param(1, 'road_pull', DataType.FLOAT)
                 self.link.register_param(2, 'surface_state', DataType.INT16)
                 self.link.register_param(3, 'game_speed', DataType.FLOAT)
                 self.link.register_telemetry(0, 'handle_pos', DataType.FLOAT)
                 self.link.register_telemetry(1, 'handle_vel', DataType.FLOAT)
+                self.link.register_telemetry(2, 'send_time_us', DataType.FLOAT)
                 self.connected = True
                 print(f"Connected to Hapkit on {port}")
 
@@ -155,6 +157,7 @@ class HapticLink:
             print("No Hapkit detected via auto-port scan. Using arrow keys instead.")
 
     def _update_loop(self):
+        last_print_time = 0.0
         while self.running:
             with self.lock:
                 # Push latest parameter changes to link
@@ -168,10 +171,17 @@ class HapticLink:
                 # Pull latest telemetry values
                 pos = self.link.get_telemetry('handle_pos')
                 vel = self.link.get_telemetry('handle_vel')
+                send_time = self.link.get_telemetry('send_time_us')
                 if pos is not None:
                     self.handle_pos = -1.0 * pos
                 if vel is not None:
                     self.handle_vel = vel
+                
+                # Print the telemetry execution time roughly once per second
+                now = time.time()
+                if send_time is not None and now - last_print_time >= 1.0:
+                    last_print_time = now
+                    print(f"[DEBUG] sendAllTelemetry execution time on Arduino: {send_time:.1f} us")
             time.sleep(0.005)  # 200 Hz update loop
 
     def update_and_read(self, keys_pressed, dt):

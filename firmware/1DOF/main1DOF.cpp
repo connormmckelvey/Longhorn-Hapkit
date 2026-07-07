@@ -62,10 +62,10 @@ enum hModes{
 };
 
 // pick which mode is there from the start
-hModes hapticMode = CAR_GAME;
+hModes hapticMode = SPRING;
 //volatile lets the compiler know this value may change due to outside factors (e.g. keyboard press or PC command)
 
-// ---- Car game variables (set from the PC over Haplink) ----
+// ---- Car game variables ----
 float road_pull = 0;       // signed force nudging the handle toward the curve's "correct" angle
 int16_t surface_state = 0; // 0 = normal road, 1 = rumble strip, 2 = off-road, 3 = crash
 float game_speed = 0;      // normalized 0 (stopped) to 1 (max speed)
@@ -94,6 +94,7 @@ void registerHaplinkVariables(){
 
 
 void setup() {
+
   //****DO NOT CHANGE*****
   //set up PWM on Timer1 so it's faster and we don't hear the annoying hum anymore
   //this stuff is more in the weeds, please consult the ATmega328/P datasheet for more detailed info (p. ~170)
@@ -106,6 +107,7 @@ void setup() {
   // freq_PWM = 16,000,000 / (2 * 1 * 400) = 20,000 or 20 kHz
 
   // Set motor controlling pins to OUTPUT mode
+  pinMode(13, OUTPUT); //pin 13 is the onboard LED, we will use it to indicate when we are sending telemetry
   pinMode(MotIn1, OUTPUT);
   pinMode(MotIn2, OUTPUT);
   pinMode(PWMout, OUTPUT);
@@ -239,8 +241,7 @@ float texture(float x, float v){
 
 // ---- CAR STEERING GAME ----
 // x = handle position (cm), v = handle velocity (cm/s)
-// Layers together:
-//   1) a self-centering spring (like real power steering), stiffer at higher game_speed
+//   1) a self-centering spring, stiffer at higher game_speed
 //   2) road_pull: a tug toward the "correct" wheel angle for the upcoming curve
 //   3) surface effects: rumble strip buzz, off-road drag, or a crash jolt
 float carGame(float x, float v){
@@ -289,9 +290,14 @@ float carGame(float x, float v){
 }
 
 // The "superloop" below can now just be used for things like serial communication
+// runs in 2ms (all of that time is spent in sending telemetry over serial)
+// haplink.update() runs in us even if receiving a packet
+// haplink.sendAllTelemetry() runs about 1ms per telemetry variable (14 bytes)
 void loop() {
+  // Update param variables by reading incoming serial packets from PC
+  //digitalWrite(13, HIGH); //turn on LED to indicate we are sending telemetry
   haplink.update();
-  //Serial.println(pos); //DO NOT enable this while using Haplink -- it corrupts the binary packet stream
+  //digitalWrite(13, LOW); //turn off LED to indicate we are done sending telemetry
 
   // allow serial monitor to read for a new mode and switch accordingly
   if(Serial.available()){
@@ -307,11 +313,13 @@ void loop() {
   }
 
   haplink.sendAllTelemetry();
+  //digitalWrite(13, LOW); //turn off LED to indicate we are done sending telemetry
 }
 
 //Haptic loop running at 1kHz using an interrupt service routine (ISR) for reliable calling
+//runs in ~100us
 ISR(TIMER2_COMPA_vect) {
-
+  //digitalWrite(13, HIGH); //turn on LED to indicate we are sending telemetry
   isr_ms++; // free-running ms counter, used for buzz timing in carGame()
 
   // read encoder
@@ -363,4 +371,5 @@ ISR(TIMER2_COMPA_vect) {
 
   // command motor based on duty cycle (-400 to 400)
   setMotor(duty);
+  //digitalWrite(13, LOW); //turn off LED to indicate we are done sending telemetry
 }
