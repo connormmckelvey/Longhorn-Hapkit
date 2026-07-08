@@ -33,11 +33,13 @@ python/
 README.md
 platformio.ini *configuration file showing dependencies
 ```
-
+#### Environment Setup
 <table>
+<!--
   <tr>
     <th colspan="2" align="center">Environment Setup</th>
   </tr>
+-->
   <tr>
     <td width="50%"><b>Arduino IDE Setup</b></td>
     <td width="50%"><b>PlatformIO Setup</b></td>
@@ -64,3 +66,24 @@ platformio.ini *configuration file showing dependencies
     </td>
   </tr>
 </table>
+
+<div style="display: flex; justify-content: center;">
+  <img src="_DOCS/1DOF_picture.png" width="50%" alt="1DOF">
+</div>
+
+#### 1-DOF Longhorn Hapkit
+blah blah
+
+<div style="display: flex; justify-content: center;">
+  <img src="_DOCS/2DOF_picture.png" width="50%" alt="2DOF">
+</div>
+
+#### 2-DOF Longhorn Hapkit Expansion
+blah blah
+
+<div style="display: flex; justify-content: center;">
+  <img src="_DOCS/car_game_video.gif" width="50%" alt="HAPLINK">
+</div>
+
+#### Python Interfacing with Haplink
+blah blah
