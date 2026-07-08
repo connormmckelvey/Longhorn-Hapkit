@@ -1,3 +1,5 @@
+<img src="_DOCS/1DOF_picture.png" alt="1-DOF" width="45%" /> <img src="_DOCS/2DOF_picture.png" alt="2-DOF" width="45%" />
+
 # The Longhorn Hapkit
 ### A Complete Haptic Robotics Education Ecosystem
 ---
@@ -21,6 +23,8 @@ firmware/
     * files are numbered coresponding to /python scripts
     1DOF/
     2DOF/
+    includes/ 
+        * header files used by various scripts
 python/
     1DOF/
     2DOF/
