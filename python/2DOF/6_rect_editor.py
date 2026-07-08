@@ -16,7 +16,7 @@ from typing import Optional, Tuple
 from haplink import Haplink, DataType
 
 #change these as needed for setup
-PORT = "COM5"
+PORT = "COM8"
 BAUD = 115200
 RECT_COUNT = 1
 RECT_PARAM_BASE = 10
@@ -220,7 +220,7 @@ def main() -> None:
     mode_frame.pack(fill=tk.X)
 
     tk.Label(mode_frame, text="mode:").pack(side=tk.LEFT)
-    mode_var = tk.StringVar(value="8")
+    mode_var = tk.StringVar(value="1")
     mode_entry = tk.Entry(mode_frame, textvariable=mode_var, width=10)
     mode_entry.pack(side=tk.LEFT, padx=4)
 

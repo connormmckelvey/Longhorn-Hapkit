@@ -5,32 +5,24 @@
 
 #define ENCODER_OPTIMIZE_INTERRUPTS
 
+#include <Arduino.h>
 #include <Encoder.h>
 #include "haplink.h"
 #include "haptic_objects_2d.h"
 
 // Haplink uses Serial for a binary protocol.
-// Raw Serial.print() debugging can corrupt Haplink packets.
 #ifndef ENABLE_DEBUG_SERIAL
 #define ENABLE_DEBUG_SERIAL 0
 #endif
 
 enum hModes{
   ZERO,
-  JOYSTICK,
-  GRID,
-  CIRCLES,
-  HARP,
-  DAMP,
-  WALL,
-  JOYSTICK_DAMPED,
   BOX_OBSTACLE
 };
 
 volatile hModes hapticMode = BOX_OBSTACLE;
 
 // Single editable rectangle for BOX_OBSTACLE mode.
-// Units match nX/nY in this firmware.
 rect_t box_rect = { {0.01f, -0.05f}, 0.05f, 0.05f };
 
 //Motor/encoder 1 pins
@@ -70,18 +62,24 @@ float X, Y;
 //End effector location normalized to workspace (0,0)
 float nX, nY, lastnX, lastnY, vX, vY, lastVx, lastVy;
 
-// Minimal telemetry to keep Haplink PC-side clients happy.
-// The Python client considers the device connected only after it receives
-// at least one valid Haplink packet.
 float hl_tel_nx = 0.0f;
 float hl_tel_ny = 0.0f;
 
-//1ms loops -- NOTE: this is not currently true :(
-float dt = .003;
+// Loop timing is measured live each iteration (the old fixed dt=.003 assumption
+// did not match the ~1.45ms actual loop time, which meant the velocity filter's
+// real cutoff frequency didn't match its design value).
+unsigned long lastLoopUs = 0;
+float dt = 0.0016; // seed value only; overwritten every loop with a measured dt
 
-// define filter "r" based on cutoff frequency
+// define filter "r" based on cutoff frequency; recomputed every loop from measured dt
 float fc = 30;                //cutoff frequency [Hz]
-float r = exp(-2*M_PI*fc*dt); //filter constant
+float r = 0.0f;
+float vel_scale_factor = 0.0f;
+
+// Precomputed factors for high-speed arithmetic
+float invCountsPerRad;
+float a2_sq;
+float cos_t1, sin_t1, cos_t5, sin_t5;
 
 //Arm lengths
 float a1 = 0.1;
@@ -94,11 +92,8 @@ float a5 = 0.06;
 float p2x, p2y, p4x, p4y, p2p4, p2ph, p3ph, phx, phy;
 
 //Terms used in Jacobian calculation
-float d, b, h, d1x2, d1y2, d5x4, d5y4, d1d, d1b, d1h, d5d, d5b, d5h, d1yh, d5yh, d1xh, d5xh, d1y3, d5y3, d1x3, d5x3;
-float d1x4 = 0;
-float d1y4 = 0;
-float d5x2 = 0;
-float d5y2 = 0;
+float d, h, d1x2, d1y2, d5x4, d5y4;
+float d1yh, d5yh, d1xh, d5xh, d1y3, d5y3, d1x3, d5x3;
 
 //forces to render in the workspace (N)
 float Ftot, Fx, Fy;
@@ -186,19 +181,37 @@ void setup() {
   lastPos2 = 0;
   lastnX = 0;
   lastnY = 0; 
+  lastVx = 0;
+  lastVy = 0;
+
+  // Precompute constants that don't depend on dt
+  invCountsPerRad = 1.0 / countsPerRad;
+  a2_sq = a2 * a2;
+
+  lastLoopUs = micros();
 }
 
 void loop() {
-
   const unsigned long loop_t0_us = micros();
   
+  // Measure actual elapsed time since the previous iteration and rederive the
+  // filter constants from it every loop.
+  unsigned long nowUs = loop_t0_us;
+  unsigned long elapsedUs = nowUs - lastLoopUs;
+  lastLoopUs = nowUs;
+  if (elapsedUs > 0) {
+    dt = elapsedUs * 1.0e-6f;
+    r = exp(-2 * M_PI * fc * dt);
+    vel_scale_factor = (1.0f - r) / dt;
+  }
+
   //encoder positions 
   pos1 = enc1.read();
   pos2 = enc2.read();
 
-  //arm 1 and 5 positions relative to home (rad)
-  t1 = 0.7872-pos1/countsPerRad;
-  t5 = 2.3544-pos2/countsPerRad;
+  //arm 1 and 5 positions relative to home (rad) - multiplication instead of division
+  t1 = 0.7872 - pos1 * invCountsPerRad;
+  t5 = 2.3544 - pos2 * invCountsPerRad;
 
   haplink.update(); //check for incoming serial packets to update parameters from the PC
   
@@ -214,143 +227,47 @@ void loop() {
   // the device (and optionally visualize state) without saturating serial.
   static unsigned long lastTelUs = 0;
   const unsigned long TEL_PERIOD_US = 20000; // 50 Hz
-  const unsigned long nowUs = micros();
-  if (nowUs - lastTelUs >= TEL_PERIOD_US) {
-    lastTelUs = nowUs;
+  if (loop_t0_us - lastTelUs >= TEL_PERIOD_US) {
+    lastTelUs = loop_t0_us;
     haplink.sendTelemetry(0);
     haplink.sendTelemetry(1);
   }
 
-    switch(hapticMode){
-      //Zero/home
-      //This just quits generating forces and resets encoders to zero-- put handle in middle of workspace and then go back to another mode
-      case ZERO:
-        Fx = 0;
-        Fy = 0;
-        enc1.write(0);
-        enc2.write(0);
-        break;
+  switch(hapticMode){
+    //Zero/home
+    //This just quits generating forces and resets encoders to zero-- put handle in middle of workspace and then go back to another mode
+    case ZERO:
+      Fx = 0;
+      Fy = 0;
+      enc1.write(0);
+      enc2.write(0);
+      // Keep the "last" state in sync with the reset encoders so the next
+      // mode transition doesn't see a spurious velocity spike from comparing
+      // against stale lastnX/lastnY/lastPos values.
+      lastPos1 = 0;
+      lastPos2 = 0;
+      lastnX = nX;
+      lastnY = nY;
+      lastVx = 0;
+      lastVy = 0;
+      break;
 
-      //Joystick mode
-      //snaps back to the center - dead zone in the middle and outside of 6cm from center
-      case JOYSTICK:
-        k_joy = 1.75;
-        if (nX*nX+nY*nY > 0.005*0.005 && nX*nX+nY*nY < 0.06*0.06){
-          dir = atan2(nY,nX);
-          Fx = -k_joy*cos(dir);
-          Fy = -k_joy*sin(dir);
-        }
-        else{
-          Fx = 0;
-          Fy = 0;
-        }
-        break;
+    case BOX_OBSTACLE: {
+      point_t pos;
+      pos.x = nX;
+      pos.y = nY;
 
-      //Grid mode
-      //Little ridges arranged in a grid pattern
-      case GRID:
-        k_bump = 2.3;
-        grid_res = 5;
-        Fx = 0;
-        Fy = 0;
-        if(abs(sin(20*grid_res*pi*nY))>0.9){
-          Fy = k_bump*(-sin(40*grid_res*pi*nY));
-        }
-        else{
-          Fy = 0;
-        }
-        if(abs(sin(20*grid_res*pi*nX))>0.9){
-          Fx = k_bump*(-sin(40*grid_res*pi*nX));
-        }
-        else{
-          Fx = 0;
-        }
-        break;
+      vector2_t vel;
+      vel.x = vX;
+      vel.y = vY;
 
-      //Concentric circles mode
-      //circular ridges from the center
-      case CIRCLES:
-        k_bump = 2;
-        grid_res = 5;
-        bump_threshold = 0.3;
-        Fx = 0;
-        Fy = 0;
-        if(abs(sin(20*grid_res*pi*sqrt(nX*nX+nY*nY)))>bump_threshold && sqrt(nX*nX+nY*nY) > 0.003){
-          Ftot = k_bump*(-sin(40*grid_res*pi*sqrt(nX*nX+nY*nY)));
-          dir = atan2(nY,nX);
-          Fx = Ftot*cos(dir);
-          Fy = Ftot*sin(dir);
-        }
-        else{
-          Fx = 0;
-          Fy = 0;
-        }
-        break;
-
-      //Harp mode 
-      //This was for my MIDI implementation to feel like "strumming"
-      //(basically ridges in right half of workspace)
-      case HARP:
-        k_bump = 2;
-        grid_res = 5;
-        Fx = 0;
-        Fy = 0;
-        if(abs(sin(20*grid_res*pi*nY))>0.9 && nX < 0){
-          Fy = k_bump*(-sin(40*grid_res*pi*nY));
-        }
-        else{
-          Fy = 0;
-        }
-        break;
-      //Damping
-      case DAMP:
-        b_damping = 5;
-        Fx = -vX*b_damping;
-        Fy = -vY*b_damping;
-        break;
-      //walls in a square with 5cm sides
-      case WALL:
-        k_wall = 500;
-        b_wall = 2;
-        Fx = 0;
-        Fy = 0;
-        if(abs(nX) > 0.025){
-          Fx = -k_wall*(nX - 0.03 * (nX>0 ? 1 : -1)) + -b_wall*vX;
-        }
-        if(abs(nY) > 0.025){
-          Fy = -k_wall*(nY - 0.03 * (nY>0 ? 1 : -1)) + -b_wall*vY;
-        }
-        break;
-      case JOYSTICK_DAMPED:
-        k_joy = 3;
-        b_damping = 5;
-        if (nX*nX+nY*nY > 0.002*0.002 && nX*nX+nY*nY < 0.06*0.06){
-          dir = atan2(nY,nX);
-          Fx = -k_joy*cos(dir)-b_damping*vX;
-          Fy = -k_joy*sin(dir)-b_damping*vY;
-        }
-        else{
-          Fx = -b_damping*vX;
-          Fy = -b_damping*vY;
-        }
-        break;
-
-      case BOX_OBSTACLE: {
-        point_t pos;
-        pos.x = nX;
-        pos.y = nY;
-
-        vector2_t vel;
-        vel.x = vX;
-        vel.y = vY;
-
-        vector2_t f = computeForceForRect(box_rect, pos, vel);
-        
-        Fx = f.x;
-        Fy = f.y;
-        break;
-      }
+      vector2_t f = computeForceForRect(box_rect, pos, vel);
+      
+      Fx = f.x;
+      Fy = f.y;
+      break;
     }
+  }
 
 
   //Don't render any forces if you're outside the workspace(ish)
@@ -364,24 +281,24 @@ void loop() {
   Torque();
 
 
-  //Tell the motors what direction to turn
+  //Tell the motors what direction to turn - direct port writes instead of 4 digitalWrites
+  // mot1A (Pin 13) = PB5, mot1B (Pin 12) = PB4
   if (tau1 < 0){
-    digitalWrite(mot1A, LOW);
-    digitalWrite(mot1B, HIGH);
+    PORTB &= ~(1 << 5); // LOW
+    PORTB |= (1 << 4);  // HIGH
   }
   else{
-    digitalWrite(mot1A, HIGH);
-    digitalWrite(mot1B, LOW);
+    PORTB |= (1 << 5);  // HIGH
+    PORTB &= ~(1 << 4); // LOW
   }
   
   if (tau2 < 0){
-    digitalWrite(mot2A, LOW);
-    digitalWrite(mot2B, HIGH);
+    PORTB &= ~(1 << 3); // LOW
+    PORTB |= (1 << 0);  // HIGH
   }
   else{
-    digitalWrite(mot2A, HIGH);
-    digitalWrite(mot2B, LOW);
-
+    PORTB |= (1 << 3);  // HIGH
+    PORTB &= ~(1 << 0); // LOW
   }
 
   //Compute duty cycles for tau1, tau2 (this is not even close to giving actual torques, it's leftover from an old project but I kind of like the scaling)
@@ -440,60 +357,77 @@ void loop() {
 
 //Forward kinematics
 void FK(float theta1, float theta5){
-  
-  p2x = a1*cos(theta1);
-  p2y = a1*sin(theta1);
-  
-  p4x = a4*cos(theta5)-a5;
-  p4y = a4*sin(theta5);
+  cos_t1 = cos(theta1);
+  sin_t1 = sin(theta1);
+  cos_t5 = cos(theta5);
+  sin_t5 = sin(theta5);
+
+  p2x = a1*cos_t1;
+  p2y = a1*sin_t1;
+
+  p4x = a4*cos_t5-a5;
+  p4y = a4*sin_t5;
 
   p2p4 = dist(p4x,p4y,p2x,p2y);
-  
-  p2ph = (a2*a2-a3*a3+p2p4*p2p4)/(2*p2p4);
-  p3ph = sqrt(a2*a2-p2ph*p2ph);
 
-  phx = p2x+(p2ph/p2p4)*(p4x-p2x);
-  phy = p2y+(p2ph/p2p4)*(p4y-p2y);
+  // Since a2 == a3 (0.128m), (a2*a2 - a3*a3) = 0.
+  // This simplifies p2ph = p2p4 / 2
+  p2ph = 0.5 * p2p4;
+  p3ph = sqrt(a2_sq-p2ph*p2ph);
 
-  X = phx+(p3ph/p2p4)*(p4y-p2y);
-  Y = phy-(p3ph/p2p4)*(p4x-p2x);
+  // Midpoint calculation for phx, phy (since a2 == a3)
+  phx = 0.5 * (p2x + p4x);
+  phy = 0.5 * (p2y + p4y);
+
+  float p3ph_over_p2p4 = p3ph / p2p4;
+  X = phx+p3ph_over_p2p4*(p4y-p2y);
+  Y = phy-p3ph_over_p2p4*(p4x-p2x);
 
   //normalized workspace
   nX = X+.03;
   nY = Y-.15;
 }
 
-//Jacobian for the current position
+//Jacobian for the current position - highly optimized using robotic linkage symmetry
 void Jac(){
-  d = dist(p2x,p2y,p4x,p4y);
-  b = dist(p2x,p2y,phx,phy);
-  h = dist(X,Y,phx,phy);
-  
-  d1x2 = -a1*sin(t1);
-  d1y2 = a1*cos(t1);
-  d5x4 = -a4*sin(t5);
-  d5y4 = a4*cos(t5);
-  
-  d1d = ((p4x-p2x)*(d1x4-d1x2)+(p4y-p2y)*(d1y4-d1y2))/d;
-  d5d = ((p4x-p2x)*(d5x4-d5x2)+(p4y-p2y)*(d5y4-d5y2))/d;
-  
-  d1b = d1d-(d1d*(a2*a2-a3*a3+d*d))/(2*d*d);
-  d5b = d5d-(d5d*(a2*a2-a3*a3+d*d))/(2*d*d);
-  
-  d1h = -b*d1b/h;
-  d5h = -b*d5b/h;
-  
-  d1yh = d1y2+(d1b*d-d1d*b)/(d*d)*(p4y-p2y)+b/d*(d1y4-d1y2);
-  d5yh = d5y2+(d5b*d-d5d*b)/(d*d)*(p4y-p2y)+b/d*(d5y4-d5y2);
-  
-  d1xh = d1x2 + (d1b*d-d1d*b)/(d*d)*(p4x-p2x)+b/d*(d1x4-d1x2);
-  d5xh = d5x2 + (d5b*d-d5d*b)/(d*d)*(p4x-p2x)+b/d*(d5x4-d5x2);
-    
-  d1y3 = d1yh-h/d*(d1x4-d1x2)-(d1h*d-d1d*h)/(d*d)*(p4x-p2x);
-  d5y3 = d5yh-h/d*(d5x4-d5x2)-(d5h*d-d5d*h)/(d*d)*(p4x-p2x);
-  
-  d1x3 = d1xh+h/d*(d1y4-d1y2)+(d1h*d-d1d*h)/(d*d)*(p4y - p2y);
-  d5x3 = d5xh+h/d*(d5y4-d5y2)+(d5h*d-d5d*h)/(d*d)*(p4y - p2y);
+  // b, d, h distances are already known from geometry in FK!
+  // b = p2ph (which is 0.5 * d), d = p2p4, h = p3ph.
+  d = p2p4;
+  h = p3ph;
+
+  // Reuse sines and cosines already calculated in FK()
+  d1x2 = -a1*sin_t1;
+  d1y2 = a1*cos_t1;
+  d5x4 = -a4*sin_t5;
+  d5y4 = a4*cos_t5;
+
+  float inv_d = 1.0 / d;
+  float h_over_d = h * inv_d;
+
+  float diff_x = p4x - p2x;
+  float diff_y = p4y - p2y;
+
+  // Since d1x4, d1y4, d5x2, d5y2 are always 0, those terms drop out below.
+  float d1d = (diff_x * (-d1x2) + diff_y * (-d1y2)) * inv_d;
+  float d5d = (diff_x * d5x4 + diff_y * d5y4) * inv_d;
+
+  // Since a2 == a3, d1b = 0.5 * d1d, and d5b = 0.5 * d5d.
+  // We can precompute the factor (a2^2 + 0.25*d^2) / (h * d^2)
+  float factor = (a2_sq + 0.25 * d * d) / (h * d * d);
+  float coeff_h_1 = -d1d * factor;
+  float coeff_h_5 = -d5d * factor;
+
+  // Midpoint sensitivity:
+  d1yh = 0.5 * d1y2;
+  d5yh = 0.5 * d5y4;
+  d1xh = 0.5 * d1x2;
+  d5xh = 0.5 * d5x4;
+
+  d1y3 = d1yh + h_over_d * d1x2 - coeff_h_1 * diff_x;
+  d5y3 = d5yh - h_over_d * d5x4 - coeff_h_5 * diff_x;
+
+  d1x3 = d1xh - h_over_d * d1y2 + coeff_h_1 * diff_y;
+  d5x3 = d5xh + h_over_d * d5y4 + coeff_h_5 * diff_y;
 }
 
 //torque to generate at motor pulley (tau = (J'*F)/gearing)
@@ -503,12 +437,14 @@ void Torque(){
 }
 
 void Velocity(){
-  vX = r * lastVx + (1 - r) * (nX - lastnX) / dt;
-  vY = r * lastVy + (1 - r) * (nY - lastnY) / dt;
+  vX = r * lastVx + vel_scale_factor * (nX - lastnX);
+  vY = r * lastVy + vel_scale_factor * (nY - lastnY);
 }
 
 //euclidean distance between two points (x1,y1) and (x2,y2)
 float dist(float x1, float y1, float x2, float y2){
-  distance = sqrt((x1-x2)*(x1-x2) + (y1-y2)*(y1-y2));
+  float dx = x1 - x2;
+  float dy = y1 - y2;
+  distance = sqrt(dx*dx + dy*dy);
   return distance;
 }
