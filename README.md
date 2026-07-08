@@ -1,4 +1,4 @@
-<img src="_DOCS/1DOF_picture.png" alt="1-DOF" width="45%" /> <img src="_DOCS/2DOF_picture.png" alt="2-DOF" width="45%" />
+![Overview](/_DOCS/overview.png)
 
 # The Longhorn Hapkit
 ### A Complete Haptic Robotics Education Ecosystem
@@ -34,6 +34,33 @@ README.md
 platformio.ini *configuration file showing dependencies
 ```
 
-#### Environment Setup
-1. Download the Arduino IDE or VS Code with the Platform.io Extension (We will be assuming the user is using the Arduino platform)
-2. Navigate to the Library Manager and install Haplink by Connor McKelvey version 1.0.3
+<table>
+  <tr>
+    <th colspan="2" align="center">Environment Setup</th>
+  </tr>
+  <tr>
+    <td width="50%"><b>Arduino IDE Setup</b></td>
+    <td width="50%"><b>PlatformIO Setup</b></td>
+  </tr>
+  <tr>
+    <td valign="top">
+      1. Download and install the <b>Arduino IDE</b>.<br><br>
+      2. Open the <b>Library Manager</b> from the left sidebar.<br><br>
+      3. Search for <b>Haplink</b> by Connor McKelvey.<br><br>
+      4. Select version <b>1.0.3</b> and click <b>Install</b>.<br><br>
+      5. Select <b>Arduino Uno</b> as your board.<br><br>
+      5. Copy the contents of <code>1_basic.cpp</code> into the main window and hit compile.<br><br>
+      6. Write code!<br><br>
+      Note: you will need to use another IDE to run future python scripts 
+    </td>
+    <td valign="top">
+      1. Download and install <b>VS Code</b> with the <b>PlatformIO Extension</b>.<br><br>
+      2. Open the <b>PlatformIO Home</b> and create a new project.<br><br>      
+      3. Open the <b>PlatformIO Home</b> and click on <b>Libraries</b>.<br><br>
+      4. Search for <b>Haplink</b> by Connor McKelvey.<br><br>
+      5. Copy <code>1_basic.cpp</code> into the <code>src/</code> folder of the project<br><br>
+      6. Run <code>PlatformIO:Upload</code> and watch the magic happen.<br><br>
+      7. When you are ready to interface with Python, navigate to <a href="https://github.com/connormmckelvey/Haplink">github.com/connormmckelvey/Haplink</a> and follow the instructions for PlatformIO install.
+    </td>
+  </tr>
+</table>
