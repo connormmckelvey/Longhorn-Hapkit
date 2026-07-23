@@ -72,7 +72,7 @@ platformio.ini *configuration file showing dependencies
 </div>
 
 #### 1-DOF Longhorn Hapkit
-blah blah
+The 1 Degree of Freedom design implements a single capstan drive to control the end-effector position. 
 
 <div style="display: flex; justify-content: center;">
   <img src="_DOCS/2DOF_picture.png" width="50%" alt="2DOF">
